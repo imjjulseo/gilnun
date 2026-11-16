@@ -11,15 +11,15 @@ export const THEMES: Record<ThemeName, Theme> = {
     bg: '#FFFFFF', surf: '#F3F6FA', line: '#E1E7EE', ink: '#16202B', sub: '#55616E', acc: '#1D64D8', onAcc: '#FFFFFF',
     land: '#F7F9FB', river: '#DCEAF8', park: '#E9F2E6', block: '#ECF0F4', road: '#FFFFFF', label: '#6B7682',
     none: '#D5DCE4',
-    ramp: { w: ['#A9C4EE', '#6C9FE8', '#3478DE', '#124AA6'], g: ['#B5DDB9', '#7CC489', '#3FA35A', '#1E7A3C'], k: ['#F6D99A', '#F0BC55', '#E39A1B', '#B87400'] },
-    dot: { w: '#3478DE', g: '#3FA35A', k: '#E39A1B' },
+    ramp: { k: ['#CFEAFB', '#8FD3F7', '#4DB8EE', '#149BD8'], w: ['#B9C3E6', '#7F90D0', '#4257A8', '#1B2A6B'], g: ['#CFE8D2', '#93D0A0', '#4FAE68', '#1E7A3C'] },
+    dot: { k: '#4DB8EE', w: '#2B3D8C', g: '#4FAE68' },
   },
   night: {
     bg: '#141829', surf: '#1E2440', line: '#2E3558', ink: '#F5EFE7', sub: '#B4BAD0', acc: '#FFA872', onAcc: '#1A1420',
     land: '#181D33', river: '#1B2C52', park: '#1A2A30', block: '#20263F', road: '#242B49', label: '#8E96B4',
     none: '#333A60',
-    ramp: { w: ['#2F4C86', '#3F6FC4', '#5C97F2', '#9CC3FF'], g: ['#2C5A44', '#3C8660', '#55B884', '#96E3B4'], k: ['#6B4A2E', '#A8703A', '#EE9A52', '#FFCB8E'] },
-    dot: { w: '#5C97F2', g: '#55B884', k: '#EE9A52' },
+    ramp: { k: ['#24506B', '#2F7DA8', '#4FB4E6', '#A5E1FF'], w: ['#2E2F6E', '#4A4CB0', '#7375E8', '#B4B6FF'], g: ['#2C5A44', '#3C8660', '#55B884', '#96E3B4'] },
+    dot: { k: '#4FB4E6', w: '#7375E8', g: '#55B884' },
   },
 }
 const BASE = 'https://tiles.openfreemap.org/styles/positron'

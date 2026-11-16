@@ -3,10 +3,11 @@
   import maplibregl from 'maplibre-gl'
   import type { GeoJSONSource, Map as MlMap, ExpressionSpecification } from 'maplibre-gl'
   import { THEMES, basemap, type ThemeName, type Kind } from './lib/theme'
-  import { DEFAULT_PREFS, rate, type LinkProps, type Prefs } from './lib/score'
+  import { DEFAULT_PREFS, FLOOR, rate, type LinkProps, type Prefs } from './lib/score'
 
   interface Region { id: string; name: string; bbox: [number, number, number, number]; center: [number, number]; zoom: number; links: string; spots: string }
-  type Fc = GeoJSON.FeatureCollection<GeoJSON.LineString, LinkProps & { cls?: string }>
+  type Shown = LinkProps & { kind: Kind | 'n'; v: number }
+  type Fc = GeoJSON.FeatureCollection<GeoJSON.LineString, LinkProps>
 
   const store = {
     get<T>(k: string, d: T): T { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d } catch { return d } },
@@ -17,7 +18,7 @@
   let themeName = $state<ThemeName>(store.get<ThemeName | null>('gn.theme', null) ?? (systemNight() ? 'night' : 'light'))
   let prefs = $state<Prefs>({ ...DEFAULT_PREFS, ...store.get<Partial<Prefs>>('gn.prefs', {}) })
   let region = $state<Region | null>(null)
-  let picked = $state<(LinkProps & { cls: string }) | null>(null)
+  let picked = $state<Shown | null>(null)
   let toast = $state('')
   let locating = $state(false)
   let failed = $state<'' | 'load' | 'gl'>('')
@@ -31,31 +32,30 @@
   let toastTimer = 0
 
   const CHIPS: { key: keyof Prefs; label: string; kind?: Kind }[] = [
-    { key: 'w', label: '물', kind: 'w' }, { key: 'k', label: '하늘', kind: 'k' }, { key: 'g', label: '녹지', kind: 'g' }, { key: 'calm', label: '한적함' },
+    { key: 'k', label: '하늘', kind: 'k' }, { key: 'w', label: '물', kind: 'w' }, { key: 'g', label: '녹지', kind: 'g' }, { key: 'calm', label: '한적함' },
   ]
 
   function say(msg: string) { toast = msg; clearTimeout(toastTimer); toastTimer = window.setTimeout(() => (toast = ''), 3200) }
 
-  function rated(): Fc {
-    const src = raw!
-    return { type: 'FeatureCollection', features: src.features.map((f) => ({ ...f, properties: { ...f.properties, cls: rate(f.properties, prefs).cls } })) }
+  function rated(): GeoJSON.FeatureCollection<GeoJSON.LineString, Shown> {
+    return { type: 'FeatureCollection', features: raw!.features.map((f) => ({ ...f, properties: { ...f.properties, ...rate(f.properties, prefs) } })) }
   }
+  /** 종류별로 값(0~100)에 따라 색이 이어서 변한다. */
   function colorExpr(): ExpressionSpecification {
-    const m: (string)[] = []
-    for (const k of ['w', 'g', 'k'] as Kind[]) theme.ramp[k].forEach((c, i) => m.push(k + (i + 1), c))
-    return ['match', ['get', 'cls'], ...m, theme.none] as unknown as ExpressionSpecification
+    const ramp = (k: Kind) => ['interpolate', ['linear'], ['get', 'v'], FLOOR, theme.none, 30, theme.ramp[k][0], 50, theme.ramp[k][1], 72, theme.ramp[k][2], 95, theme.ramp[k][3]]
+    return ['match', ['get', 'kind'], 'k', ramp('k'), 'w', ramp('w'), 'g', ramp('g'), theme.none] as unknown as ExpressionSpecification
   }
   function addOverlay() {
     if (!map || !raw) return
     const before = map.getStyle().layers.find((l) => l.type === 'symbol')?.id
     if (!map.getSource('links')) map.addSource('links', { type: 'geojson', data: rated() })
     if (!map.getSource('pick')) map.addSource('pick', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-    const width = (a: number, b: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 12, a * 0.5, 15, a, 18, b]
+    const grow = ['+', 0.55, ['*', 0.011, ['get', 'v']]]                       // 값이 클수록 굵게
+    const width = (a: number, b: number, scaled = true) => ['interpolate', ['linear'], ['zoom'], 12, ['*', a * 0.5, scaled ? grow : 1], 15, ['*', a, scaled ? grow : 1], 18, ['*', b, scaled ? grow : 1]] as unknown as ExpressionSpecification
     const add = (layer: maplibregl.LayerSpecification) => { if (!map!.getLayer(layer.id)) map!.addLayer(layer, before) }
-    add({ id: 'links-n', type: 'line', source: 'links', filter: ['==', ['get', 'cls'], 'n'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': theme.none, 'line-width': width(1.6, 4), 'line-opacity': 0.85 } })
-    add({ id: 'links-c', type: 'line', source: 'links', filter: ['!=', ['get', 'cls'], 'n'], layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['to-number', ['slice', ['get', 'cls'], 1]] }, paint: { 'line-color': colorExpr(), 'line-width': width(3.2, 8) } })
-    add({ id: 'pick-halo', type: 'line', source: 'pick', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': theme.ink, 'line-width': width(7, 14), 'line-opacity': 0.9 } })
-    add({ id: 'pick-line', type: 'line', source: 'pick', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': colorExpr(), 'line-width': width(4, 9) } })
+    add({ id: 'links', type: 'line', source: 'links', layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'v'] }, paint: { 'line-color': colorExpr(), 'line-width': width(3, 7.5) } })
+    add({ id: 'pick-halo', type: 'line', source: 'pick', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': theme.ink, 'line-width': width(8, 15, false), 'line-opacity': 0.9 } })
+    add({ id: 'pick-line', type: 'line', source: 'pick', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': colorExpr(), 'line-width': width(4.5, 10, false) } })
     add({ id: 'links-hit', type: 'line', source: 'links', paint: { 'line-color': '#000', 'line-opacity': 0, 'line-width': 22 } })
   }
   function repaint() {
@@ -67,7 +67,7 @@
     if (!map) return
     const src = map.getSource('pick') as GeoJSONSource
     if (!f) { picked = null; src.setData({ type: 'FeatureCollection', features: [] }); return }
-    picked = f.properties as LinkProps & { cls: string }
+    picked = f.properties as Shown
     src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', geometry: f.geometry, properties: f.properties }] })
   }
 
@@ -104,7 +104,7 @@
 
   const lead = $derived.by(() => {
     if (!picked) return null
-    const kind = picked.cls === 'n' ? null : (picked.cls[0] as Kind)
+    const kind = picked.kind === 'n' ? null : picked.kind
     const title = kind === 'w' ? '물이 보이는 길이에요' : kind === 'g' ? '녹지가 보이는 길이에요' : kind === 'k' ? '하늘이 넓게 보이는 길이에요' : '뷰가 약한 길이에요'
     const calm = picked.c < 70 ? '큰길 옆이라 차가 많이 다녀요.' : picked.c >= 110 ? '공원이나 보행로라 걷기 편해요.' : ''
     return { kind, title, calm }
