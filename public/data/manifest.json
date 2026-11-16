@@ -1,0 +1,23 @@
+{
+ "version": "2026-11-16.pilot2",
+ "note": "임시 가중치. 지형 1:5000 등고선, 수목 일부 반영",
+ "regions": [
+  {
+   "id": "pilot",
+   "name": "노량진, 본동",
+   "bbox": [
+    126.91794,
+    37.49884,
+    126.97447,
+    37.53096
+   ],
+   "center": [
+    126.9445,
+    37.5125
+   ],
+   "zoom": 14.6,
+   "links": "pilot/links.json",
+   "spots": "pilot/spots.json"
+  }
+ ]
+}

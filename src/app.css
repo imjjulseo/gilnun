@@ -1,0 +1,9 @@
+*,*::before,*::after{box-sizing:border-box}
+html,body,#app{height:100%;margin:0}
+body{font-family:'Noto Sans KR',system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;overscroll-behavior:none;background:var(--bg,#fff);color:var(--ink,#16202B)}
+button{font:inherit;color:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.maplibregl-ctrl-attrib{font-size:10px;background:color-mix(in srgb,var(--bg) 78%,transparent)!important;color:var(--sub)}
+.maplibregl-ctrl-attrib a{color:var(--sub)}
+.maplibregl-ctrl-bottom-right{bottom:var(--sheet-h,150px)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
