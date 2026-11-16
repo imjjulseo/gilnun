@@ -31,7 +31,7 @@ export async function basemap(t: Theme): Promise<StyleSpecification> {
   }
   if (!cache) return { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': t.land } }] }
   const s: StyleSpecification = JSON.parse(JSON.stringify(cache))
-  s.layers = s.layers.filter((l: any) => !(l.type === 'symbol' && (l['source-layer'] === 'poi' || l['source-layer'] === 'aerodrome_label')))
+  s.layers = s.layers.filter((l: any) => !(l.type === 'symbol' && (l['source-layer'] === 'poi' || l['source-layer'] === 'aerodrome_label' || (l['source-layer'] === 'transportation_name' && l.layout?.['icon-image']))))
   for (const l of s.layers as any[]) {
     const sl = l['source-layer']; l.paint = l.paint ?? {}
     if (l.type === 'background') l.paint['background-color'] = t.land
@@ -47,6 +47,7 @@ export async function basemap(t: Theme): Promise<StyleSpecification> {
       else l.paint['line-color'] = t.line
     } else if (l.type === 'symbol') {
       l.paint['text-color'] = t.label; l.paint['text-halo-color'] = t.land; l.paint['text-halo-width'] = 1.2
+      if (l.layout?.['text-field']) l.layout['text-field'] = ['coalesce', ['get', 'name:ko'], ['get', 'name'], ['get', 'name:latin']]   // 지명은 한글로
     } else if (l.type === 'fill-extrusion') { l.paint['fill-extrusion-color'] = t.block }
   }
   return s

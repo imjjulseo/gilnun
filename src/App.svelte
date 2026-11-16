@@ -20,7 +20,7 @@
   let picked = $state<(LinkProps & { cls: string }) | null>(null)
   let toast = $state('')
   let locating = $state(false)
-  let failed = $state(false)
+  let failed = $state<'' | 'load' | 'gl'>('')
   let sheetEl = $state<HTMLElement | null>(null)
   const theme = $derived(THEMES[themeName])
 
@@ -138,7 +138,7 @@
           const hit = map!.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['links-hit'] })
           pick(hit[0] ?? null)
         })
-      } catch { failed = true }
+      } catch (e) { failed = /webgl/i.test(String(e)) ? 'gl' : 'load' }
     })()
     return () => { dead = true; map?.remove() }
   })
@@ -176,8 +176,8 @@
   <section class="sheet" bind:this={sheetEl} aria-live="polite">
     <div class="grip" aria-hidden="true"></div>
     {#if failed}
-      <h1>지도를 불러오지 못했어요</h1>
-      <p>인터넷 연결을 확인하고 화면을 새로 고쳐 주세요.</p>
+      <h1>{failed === 'gl' ? '이 브라우저에서는 지도를 그릴 수 없어요' : '지도를 불러오지 못했어요'}</h1>
+      <p>{failed === 'gl' ? '크롬이나 사파리 최신 버전에서 열어 주세요.' : '인터넷 연결을 확인하고 화면을 새로 고쳐 주세요.'}</p>
     {:else if picked && lead}
       <div class="row">
         <h1>{lead.title}</h1>
