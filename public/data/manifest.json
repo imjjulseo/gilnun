@@ -17,7 +17,9 @@
    ],
    "zoom": 14.6,
    "links": "pilot/links.json",
-   "spots": "pilot/spots.json"
+   "spots": "pilot/spots.json",
+   "poi": "pilot/poi.json",
+   "addr": "pilot/addr.json"
   }
  ]
 }
