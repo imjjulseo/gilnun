@@ -6,13 +6,15 @@
   import { DEFAULT_PREFS, FLOOR, rate, type LinkProps, type Prefs } from './lib/score'
   import { duskMix, sunTimes, hhmm } from './lib/sun'
   import { Places, CAT_LABEL, looksShared, meters, floorText, type Place, type PoiData, type AddrData } from './lib/places'
+  import { MODES, WALK, type ModeId, type RouteResult } from './lib/route'
+  import RouteWorker from './lib/route.worker.ts?worker'
 
-  interface Region { id: string; name: string; bbox: [number, number, number, number]; center: [number, number]; zoom: number; links: string; spots: string; poi?: string; addr?: string }
+  interface Region { id: string; name: string; bbox: [number, number, number, number]; center: [number, number]; zoom: number; links: string; spots: string; poi?: string; addr?: string; graph?: string }
   interface Spot { id: string; rank: number; lat: number; lon: number; dong: string; title: string; kind: Kind; sky: number; water: number; nat: number; pano: number; dir: string | null; west: number; elev: number; top: number; prom: number; calm: boolean }
   type Shown = LinkProps & { kind: Kind | 'n'; v: number }
   type Fc = GeoJSON.FeatureCollection<GeoJSON.LineString, LinkProps>
   type Near = { type: 'spot'; spot: Spot; d: number } | { type: 'link'; f: GeoJSON.Feature<GeoJSON.LineString, Shown>; d: number }
-  type Mode = 'idle' | 'link' | 'spot' | 'near' | 'place' | 'go'
+  type Mode = 'idle' | 'link' | 'spot' | 'near' | 'place' | 'go' | 'route'
 
   const store = {
     get<T>(k: string, d: T): T { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d } catch { return d } },
@@ -48,6 +50,14 @@
   let cat = $state<number | null>(null)
   let searchEl = $state<HTMLTextAreaElement | null>(null)
   let viewTick = $state(0)
+  // 4단계: 동선
+  let routes = $state<RouteResult[] | null>(null)
+  let routeMode = $state<ModeId>(store.get<ModeId>('gn.mode', 'balance'))
+  let routeBusy = $state(false)
+  let routeErr = $state('')
+  let sugs = $state<({ id: string; extra: number } | null)[]>([])
+  let dragFrom = $state(-1)
+  let dragTo = $state(-1)
   const theme = $derived(withDusk(themeName, dusk))
 
   let mapEl: HTMLDivElement
@@ -99,6 +109,7 @@
     if (!map || !map.getLayer('links')) return
     map.setPaintProperty('links', 'line-color', colorExpr()); map.setPaintProperty('pick-line', 'line-color', colorExpr())
     map.setPaintProperty('pick-halo', 'line-color', theme.ink)
+    if (map.getLayer('route-line')) { map.setPaintProperty('route-line', 'line-color', routeColor()); map.setPaintProperty('route-case', 'line-color', theme.ink); map.setPaintProperty('route-walk', 'line-color', theme.ink) }
   }
   function clearPick() { picked = null; (map?.getSource('pick') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] }) }
   function selectPin(id: string | null) { for (const [k, el] of pins) el.classList.toggle('sel', k === id) }
@@ -229,6 +240,99 @@
     showPlace({ id: `m${ll.lng.toFixed(6)},${ll.lat.toFixed(6)}`, name: a ? `${a} 근처` : '고른 위치', sub: '', lon: ll.lng, lat: ll.lat, addr: '', floor: null, cat: -1 }, 'press', false)
   }
 
+  // ---- 동선
+  let worker: Worker | null = null, wid = 0, wready: Promise<unknown> | null = null
+  const waiting = new Map<number, (v: { ok: boolean; data?: any; error?: string }) => void>()
+  function call<T>(type: string, data: unknown): Promise<T> {
+    if (!worker) {
+      worker = new RouteWorker()
+      worker.onmessage = (e) => { const f = waiting.get(e.data.id); waiting.delete(e.data.id); f?.(e.data) }
+      const url = new URL('./data/' + region!.graph, location.href).href
+      wready = new Promise((res, rej) => { const id = ++wid; waiting.set(id, (r) => (r.ok ? res(r.data) : rej(r.error))); worker!.postMessage({ id, type: 'init', data: { url } }) })
+    }
+    return wready!.then(() => new Promise<T>((res, rej) => { const id = ++wid; waiting.set(id, (r) => (r.ok ? res(r.data as T) : rej(r.error))); worker!.postMessage({ id, type, data }) }))
+  }
+  const stopsOf = () => go.map((g) => [g.lon, g.lat] as [number, number])
+  async function makeRoute(fit = true) {
+    if (go.length < 2 || !region?.graph) return
+    mode = 'route'; routeBusy = true; routeErr = ''
+    try {
+      const r = await call<RouteResult[] | { error: string }>('route', { stops: stopsOf(), prefs: $state.snapshot(prefs) })
+      if ('error' in r) { routes = null; routeErr = r.error === 'far' ? '갈 곳 중에 걷는 길에서 300m 넘게 떨어진 곳이 있어요.' : '걸어서 이어지는 길을 찾지 못했어요.'; drawRoute(); return }
+      routes = r; await tick(); drawRoute(fit)
+      const inGo = new Set(go.map((g) => g.id))
+      sugs = await call('detours', { stops: stopsOf(), spots: spots.filter((s) => !inGo.has(s.id)).map((s) => ({ id: s.id, lon: s.lon, lat: s.lat })) })
+    } catch { routeErr = '동선을 계산하지 못했어요. 잠시 뒤에 다시 해 주세요.' }
+    finally { routeBusy = false }
+  }
+  const current = $derived(routes?.find((r) => r.mode === routeMode) ?? null)
+  const fastest = $derived(routes?.find((r) => r.mode === 'fast') ?? null)
+  function drawRoute(fit = false) {
+    if (!map) return
+    const src = map.getSource('route') as GeoJSONSource | undefined
+    const r = mode === 'route' ? routes?.find((x) => x.mode === routeMode) : null
+    const feats = r ? r.legs.flatMap((l) => l.segs.map((sg) => ({ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: sg.coords }, properties: { kind: sg.kind, v: sg.v, walk: sg.walk ? 1 : 0 } }))) : []
+    const data = { type: 'FeatureCollection' as const, features: feats }
+    if (src) src.setData(data)
+    else {
+      map.addSource('route', { type: 'geojson', data })
+      const W = (a: number, b: number) => ['interpolate', ['linear'], ['zoom'], 12, a * 0.6, 15, a, 18, b] as unknown as ExpressionSpecification
+      map.addLayer({ id: 'route-case', type: 'line', source: 'route', filter: ['==', ['get', 'walk'], 0], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': theme.ink, 'line-width': W(9, 16) } })
+      map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['==', ['get', 'walk'], 0], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': routeColor(), 'line-width': W(5.5, 11) } })
+      map.addLayer({ id: 'route-walk', type: 'line', source: 'route', filter: ['==', ['get', 'walk'], 1], layout: { 'line-cap': 'round' }, paint: { 'line-color': theme.ink, 'line-width': 2.5, 'line-dasharray': [1, 2] } })
+    }
+    map.setPaintProperty('links', 'line-opacity', r ? 0.3 : 1)          // 동선을 볼 때는 바탕 길을 흐리게
+    map.triggerRepaint()
+    if (r && fit) {
+      const b = new maplibregl.LngLatBounds()
+      for (const f of feats) for (const c of f.geometry.coordinates) b.extend(c as [number, number])
+      const sh = sheetEl?.offsetHeight ?? 300
+      map.fitBounds(b, { padding: { top: 150, bottom: sh + 30, left: 40, right: 40 }, duration: 600, maxZoom: 17 })
+    }
+  }
+  /** 동선 선은 뷰가 약한 구간도 보이게 회색 대신 보조 글자색을 쓴다. */
+  function routeColor(): ExpressionSpecification {
+    const ramp = (k: Kind) => ['interpolate', ['linear'], ['get', 'v'], FLOOR, theme.sub, 30, theme.ramp[k][1], 60, theme.ramp[k][2], 90, theme.ramp[k][3]]
+    return ['match', ['get', 'kind'], 'k', ramp('k'), 'w', ramp('w'), 'g', ramp('g'), theme.sub] as unknown as ExpressionSpecification
+  }
+  function leaveRoute() { mode = 'go'; drawRoute() }
+  function pickMode(m: ModeId) { routeMode = m; store.set('gn.mode', m); drawRoute() }
+  async function tidyOrder() {
+    if (go.length < 3) return
+    const ord = await call<number[]>('order', { stops: stopsOf() })
+    if (ord.every((v, i) => v === i)) { say('지금 순서가 가장 짧아요.'); return }
+    go = ord.map((i) => go[i]); store.set('gn.go', go); say('가장 짧은 순서로 바꿨어요.')
+    makeRoute(false)
+  }
+  function addDetour(i: number, id: string) {
+    const s = spots.find((x) => x.id === id); if (!s) return
+    if (go.length >= MAX_GO) { say(`갈 곳은 ${MAX_GO}곳까지 넣을 수 있어요.`); return }
+    go = [...go.slice(0, i + 1), { id: s.id, name: s.title, sub: '스팟', lon: s.lon, lat: s.lat, addr: '', floor: null, cat: -1 }, ...go.slice(i + 1)]; store.set('gn.go', go)
+    say(`${s.title}에 들르도록 넣었어요.`); makeRoute(false)
+  }
+  /** 갈 곳 순서 바꾸기: 손잡이를 끌거나 키보드 위아래 화살표 */
+  function moveGo(from: number, to: number) {
+    if (from === to || to < 0 || to >= go.length) return
+    const a = [...go]; const [x] = a.splice(from, 1); a.splice(to, 0, x); go = a; store.set('gn.go', go)
+  }
+  function dragStart(e: PointerEvent, i: number) {
+    const row = (e.currentTarget as HTMLElement).closest('li')!, list = row.parentElement!
+    const rows = [...list.children] as HTMLElement[], tops = rows.map((r) => r.getBoundingClientRect())
+    dragFrom = i; dragTo = i
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) => {
+      let t = rows.length - 1
+      for (let k = 0; k < tops.length; k++) if (ev.clientY < tops[k].top + tops[k].height / 2) { t = k; break }
+      dragTo = t
+    }
+    const up = () => { (e.target as HTMLElement).removeEventListener('pointermove', move); moveGo(dragFrom, dragTo); dragFrom = dragTo = -1 }
+    ;(e.target as HTMLElement).addEventListener('pointermove', move)
+    ;(e.target as HTMLElement).addEventListener('pointerup', up, { once: true })
+    ;(e.target as HTMLElement).addEventListener('pointercancel', up, { once: true })
+  }
+  const mins = (m: number) => Math.max(1, Math.round(m / WALK))
+  const kmText = (m: number) => (m < 1000 ? `${Math.round(m / 10) * 10}m` : `${(m / 1000).toFixed(1)}km`)
+
   // ---- 검색
   async function openSearch() {
     searchOpen = true; viewTick++
@@ -248,13 +352,14 @@
   async function restyle() {
     if (!map) return
     map.setStyle(await basemap(theme))
-    map.once('styledata', () => { addOverlay() })
+    map.once('styledata', () => { addOverlay(); drawRoute() })
   }
   function toggle(key: keyof Prefs) {
     const next = { ...prefs, [key]: !prefs[key] }
     if (!next.k && !next.w && !next.g) { say('하늘, 물, 녹지 중 하나는 켜 두어야 해요.'); return }
     prefs = next; store.set('gn.prefs', next); repaint()
     if (nearOn) computeNear()
+    if (mode === 'route') makeRoute(false)
   }
   function switchTheme() {
     themeName = themeName === 'light' ? 'night' : 'light'; store.set('gn.theme', themeName); restyle()
@@ -317,6 +422,7 @@
     untrack(recolor)
   })
   $effect(() => { go.length; go; if (ready) untrack(drawGo) })
+  $effect(() => { if (mode !== 'route' && ready) untrack(() => drawRoute()) })
   $effect(() => {
     if (!sheetEl) return
     const ro = new ResizeObserver(() => document.documentElement.style.setProperty('--sheet-h', sheetEl!.offsetHeight + 'px'))
@@ -350,11 +456,13 @@
         mids = raw.features.map((f) => f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)] as [number, number])
         map = new maplibregl.Map({ container: mapEl, style, center: region.center, zoom: region.zoom, minZoom: 11, maxZoom: 19, attributionControl: { compact: true, customAttribution: '서울시, 국토지리정보원, 소상공인시장진흥공단' }, dragRotate: false, pitchWithRotate: false })
         map.touchZoomRotate.disableRotation()
+        if (import.meta.env.DEV || location.hostname === 'localhost') (window as any).__tg = { map: () => map }
         map.on('load', () => { addOverlay(); addPins(); drawGo() })
         map.on('moveend', nearLater)
         map.on('click', (e) => {
           if (Date.now() < quietClick) return
           const hit = map!.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['links-hit'] })
+          if (mode === 'route') return
           if (hit[0]) showLink(hit[0].geometry, hit[0].properties as Shown)
           else closeSheet()
         })
@@ -403,7 +511,7 @@
     </div>
   </header>
 
-  {#if ready}
+  {#if ready && mode !== 'route'}
     <button type="button" class="pill nearby" onclick={toggleNear} aria-pressed={nearOn}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-6 4 4 3-3 6 5"/><circle cx="17" cy="6.5" r="2.5"/></svg>
       주변 뷰 좋은 곳
@@ -443,19 +551,80 @@
         <h1>갈 곳 {go.length}곳</h1>
         {@render x('갈 곳 목록 닫기')}
       </div>
+      {#if go.length > 1}<p>손잡이를 끌어서 순서를 바꿀 수 있어요.</p>{/if}
       <ol class="list">
         {#each go as g, i (g.id)}
-          <li class="gorow">
+          <li class="gorow" class:lift={dragFrom === i} class:gap-above={dragFrom >= 0 && dragTo === i && dragFrom > i} class:gap-below={dragFrom >= 0 && dragTo === i && dragFrom < i}>
             <button type="button" class="item" onclick={() => showPlace(g, 'go')}>
               <span class="num" aria-hidden="true">{i + 1}</span>
               <span class="txt"><strong>{g.name}</strong><span>{[g.cat >= 0 ? CAT_LABEL[g.cat] : g.sub === '스팟' ? '스팟' : '', g.addr].filter(Boolean).join(', ') || '지도에서 고른 곳'}</span></span>
             </button>
+            {#if go.length > 1}
+              <button type="button" class="icon handle" aria-label={`${g.name} 순서 바꾸기. 위아래 화살표로 옮겨요.`} onpointerdown={(e) => dragStart(e, i)}
+                onkeydown={(e) => { if (e.key === 'ArrowUp') { e.preventDefault(); moveGo(i, i - 1) } else if (e.key === 'ArrowDown') { e.preventDefault(); moveGo(i, i + 1) } }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 8h14M5 12h14M5 16h14"/></svg>
+              </button>
+            {/if}
             <button type="button" class="icon rm" onclick={() => removeGo(g)} aria-label={`${g.name} 빼기`}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg>
             </button>
           </li>
         {/each}
       </ol>
+      {#if go.length >= 2}
+        <button type="button" class="wide primary" onclick={() => makeRoute()}>동선 잇기</button>
+      {:else}
+        <p>두 곳 이상 넣으면 뷰 좋은 길로 이어 드려요.</p>
+      {/if}
+    {:else if mode === 'route'}
+      <div class="row">
+        <h1>동선</h1>
+        <button type="button" class="icon ghost" onclick={leaveRoute} aria-label="갈 곳 목록으로 돌아가기">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+      </div>
+      {#if routeErr}
+        <p>{routeErr}</p>
+      {:else if !routes}
+        <div class="row start"><span class="loader" aria-hidden="true"></span><p>뷰 좋은 길을 찾고 있어요.</p></div>
+      {:else}
+        <div class="tabs" role="tablist" aria-label="길 고르기">
+          {#each MODES as m (m.id)}
+            {@const r = routes.find((x) => x.mode === m.id)!}
+            <button type="button" role="tab" class="tab" aria-selected={routeMode === m.id} onclick={() => pickMode(m.id)}>
+              <span>{m.label}</span><strong>{mins(r.len)}분</strong><span class="km">{kmText(r.len)}</span>
+            </button>
+          {/each}
+        </div>
+        {#if current && fastest}
+          {@const extra = mins(current.len) - mins(fastest.len)}
+          {@const good = Math.round((current.share.k + current.share.w + current.share.g) * 100)}
+          {@const top = current.share.k >= current.share.w && current.share.k >= current.share.g ? '하늘이 트인' : current.share.w >= current.share.g ? '물이 보이는' : '녹지가 보이는'}
+          <ul class="lines">
+            <li>{good > 0 ? `뷰 좋은 구간이 전체의 ${good}%예요.` : '이 동선에는 뷰 좋은 구간이 거의 없어요.'}</li>
+            {#if good > 0}<li>그중 {top} 길이 가장 길어요.</li>{/if}
+            {#if current.mode !== 'fast'}<li>{extra > 0 ? `가장 빠른 길보다 ${extra}분 더 걸어요.` : '가장 빠른 길과 시간이 같아요.'}</li>{/if}
+          </ul>
+          <ol class="legs">
+            {#each go as g, i (g.id)}
+              <li><span class="num sm" aria-hidden="true">{i + 1}</span><span class="nm">{g.name}</span></li>
+              {#if i < go.length - 1 && current.legs[i]}
+                <li class="leg">걸어서 {mins(current.legs[i].len)}분, {kmText(current.legs[i].len)}</li>
+                {#if sugs[i]}
+                  {@const sp = spots.find((s) => s.id === sugs[i]!.id)}
+                  {#if sp}
+                    <li class="sug">
+                      <span>{mins(sugs[i]!.extra)}분 더 걸으면 {sp.title}에 들를 수 있어요.</span>
+                      <button type="button" class="mini" onclick={() => addDetour(i, sp.id)}>들르기</button>
+                    </li>
+                  {/if}
+                {/if}
+              {/if}
+            {/each}
+          </ol>
+          {#if go.length >= 3}<button type="button" class="wide ghostbtn" onclick={tidyOrder} disabled={routeBusy}>순서 정리하기</button>{/if}
+        {/if}
+      {/if}
     {:else if mode === 'spot' && spot}
       {@const inGo = go.some((g) => g.id === spot!.id)}
       <div class="row">
@@ -635,7 +804,23 @@
   .txt span { font-size: 13px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
   .item :global(svg) { color: var(--sub); flex: none }
   .tag { font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 10px; background: var(--acc); color: var(--on-acc); flex: none }
-  .gorow { display: flex; align-items: center; gap: 6px }
+  .gorow { display: flex; align-items: center; gap: 6px; transition: transform 0.12s }
+  .gorow.lift { opacity: 0.6 }
+  .gorow.gap-above { box-shadow: 0 -3px 0 var(--acc) }
+  .gorow.gap-below { box-shadow: 0 3px 0 var(--acc) }
+  .handle { color: var(--sub); touch-action: none; cursor: grab }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 4px; border-radius: 16px; background: var(--surf); border: 1px solid var(--line) }
+  .tab { min-height: 64px; padding: 8px 4px; border: 0; border-radius: 12px; background: transparent; color: var(--sub); display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 13px }
+  .tab strong { font-size: 17px; color: var(--ink) }
+  .tab .km { font-size: 12px }
+  .tab[aria-selected='true'] { background: var(--bg); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12); color: var(--ink); font-weight: 700 }
+  .legs { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px }
+  .legs li { display: flex; align-items: center; gap: 10px; font-size: 15px }
+  .legs .nm { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .legs .leg { padding-left: 11px; margin-left: 11px; border-left: 2px dashed var(--line); color: var(--sub); font-size: 13px; min-height: 26px }
+  .legs .sug { margin-left: 11px; padding: 10px 12px; border-radius: 12px; background: var(--surf); border: 1px solid var(--line); justify-content: space-between; font-size: 14px }
+  .num.sm { width: 24px; height: 24px; font-size: 13px }
+  .mini { height: 44px; padding: 0 14px; border-radius: 12px; border: 0; background: var(--acc); color: var(--on-acc); font-weight: 700; flex: none }
   .rm { color: var(--sub); border: 1px solid var(--line); background: var(--surf) }
   .loader { width: 18px; height: 18px; border-radius: 9px; border: 2.5px solid var(--line); border-top-color: var(--ink); animation: spin 0.9s linear infinite; flex: none }
   .search { position: absolute; inset: 0; z-index: 5; background: var(--bg); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top) }

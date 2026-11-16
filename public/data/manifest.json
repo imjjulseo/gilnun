@@ -19,7 +19,8 @@
    "links": "pilot/links.json",
    "spots": "pilot/spots.json",
    "poi": "pilot/poi.json",
-   "addr": "pilot/addr.json"
+   "addr": "pilot/addr.json",
+   "graph": "pilot/graph.bin"
   }
  ]
 }
