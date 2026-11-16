@@ -28,6 +28,8 @@
   let spot = $state<Spot | null>(null)
   let near = $state<Near[]>([])
   let nearFrom = $state<'me' | 'center'>('center')
+  let nearOn = $state(false)
+  let nearTimer = 0
   let ready = $state(false)
   let toast = $state('')
   let locating = $state(false)
@@ -44,7 +46,7 @@
   let toastTimer = 0
 
   const CHIPS: { key: keyof Prefs; label: string; kind?: Kind }[] = [
-    { key: 'k', label: '하늘', kind: 'k' }, { key: 'w', label: '물', kind: 'w' }, { key: 'g', label: '녹지', kind: 'g' }, { key: 'calm', label: '한적함' },
+    { key: 'k', label: '하늘', kind: 'k' }, { key: 'w', label: '물', kind: 'w' }, { key: 'g', label: '녹지', kind: 'g' }, { key: 'calm', label: '조용한 길' },
   ]
   const KIND_W: Record<Kind | 'n', number> = { k: 1, w: 0.95, g: 0.85, n: 0 }     // 추천 순서는 하늘을 먼저
   const KIND_LINE: Record<Kind | 'n', string> = { k: '하늘이 넓게 보이는 길', w: '물이 보이는 길', g: '녹지가 보이는 길', n: '뷰가 약한 길' }
@@ -100,7 +102,15 @@
     clearPick(); spot = s; mode = 'spot'; selectPin(s.id)
     if (fly && map) map.easeTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 16), duration: 500 })
   }
-  function closeSheet() { clearPick(); spot = null; selectPin(null); mode = 'idle' }
+  /** 닫기: 주변 목록을 켜 둔 상태면 목록으로 돌아간다. */
+  function closeSheet() { clearPick(); spot = null; selectPin(null); mode = nearOn ? 'near' : 'idle'; if (nearOn) computeNear() }
+  function toggleNear() {
+    nearOn = !nearOn
+    mapEl.classList.toggle('pins-on', nearOn)
+    clearPick(); spot = null; selectPin(null)
+    if (nearOn) { computeNear(); mode = 'near' } else mode = 'idle'
+  }
+  function nearLater() { if (!nearOn) return; clearTimeout(nearTimer); nearTimer = window.setTimeout(computeNear, 250) }
 
   function addPins() {
     if (!map) return
@@ -114,8 +124,8 @@
     }
   }
 
-  /** 지금 보이는 화면 안에서 뷰 좋은 스팟과 길을 고른다. */
-  function findNear() {
+  /** 지금 보이는 화면 안에서 뷰 좋은 스팟과 길을 고른다. 지도를 옮기면 다시 고른다. */
+  function computeNear() {
     if (!map || !raw) return
     const b = map.getBounds(), c = map.getCenter()
     const inView = (x: number, y: number) => x >= b.getWest() && x <= b.getEast() && y >= b.getSouth() && y <= b.getNorth()
@@ -134,7 +144,6 @@
       if (L.length === 2) break
     }
     near = [...S, ...L].sort((a, b) => a.d - b.d)
-    clearPick(); spot = null; selectPin(null); mode = 'near'
   }
   function openNear(n: Near) {
     if (n.type === 'spot') { showSpot(n.spot); return }
@@ -152,7 +161,7 @@
     const next = { ...prefs, [key]: !prefs[key] }
     if (!next.k && !next.w && !next.g) { say('하늘, 물, 녹지 중 하나는 켜 두어야 해요.'); return }
     prefs = next; store.set('gn.prefs', next); repaint()
-    if (mode === 'near') findNear()
+    if (nearOn) computeNear()
   }
   function switchTheme() {
     themeName = themeName === 'light' ? 'night' : 'light'; store.set('gn.theme', themeName); restyle()
@@ -221,6 +230,7 @@
         map = new maplibregl.Map({ container: mapEl, style, center: region.center, zoom: region.zoom, minZoom: 11, maxZoom: 19, attributionControl: { compact: true, customAttribution: '서울시, 국토지리정보원' }, dragRotate: false, pitchWithRotate: false })
         map.touchZoomRotate.disableRotation()
         map.on('load', () => { addOverlay(); addPins() })
+        map.on('moveend', nearLater)
         map.on('click', (e) => {
           const hit = map!.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['links-hit'] })
           if (hit[0]) showLink(hit[0].geometry, hit[0].properties as Shown)
@@ -259,7 +269,7 @@
   </header>
 
   {#if ready}
-    <button type="button" class="pill nearby" onclick={findNear} aria-pressed={mode === 'near'}>
+    <button type="button" class="pill nearby" onclick={toggleNear} aria-pressed={nearOn}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-6 4 4 3-3 6 5"/><circle cx="17" cy="6.5" r="2.5"/></svg>
       주변 뷰 좋은 곳
     </button>
@@ -279,8 +289,8 @@
     {:else if mode === 'spot' && spot}
       <div class="row">
         <span class="badge">이 동네 상위 {Math.max(1, Math.ceil(spot.top))}%</span>
-        <button type="button" class="icon ghost" onclick={closeSheet} aria-label="스팟 정보 닫기">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        <button type="button" class="icon ghost" onclick={closeSheet} aria-label={nearOn ? '목록으로 돌아가기' : '스팟 정보 닫기'}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d={nearOn ? 'M15 5l-7 7 7 7' : 'M6 6l12 12M18 6L6 18'}/></svg>
         </button>
       </div>
       <h1 class="big">{spot.title}</h1>
@@ -293,7 +303,7 @@
     {:else if mode === 'near'}
       <div class="row">
         <h1>주변 뷰 좋은 곳</h1>
-        <button type="button" class="icon ghost" onclick={closeSheet} aria-label="목록 닫기">
+        <button type="button" class="icon ghost" onclick={toggleNear} aria-label="목록 닫기">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
@@ -320,8 +330,8 @@
     {:else if mode === 'link' && picked && lead}
       <div class="row">
         <h1>{lead.title}</h1>
-        <button type="button" class="icon ghost" onclick={closeSheet} aria-label="길 정보 닫기">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        <button type="button" class="icon ghost" onclick={closeSheet} aria-label={nearOn ? '목록으로 돌아가기' : '길 정보 닫기'}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d={nearOn ? 'M15 5l-7 7 7 7' : 'M6 6l12 12M18 6L6 18'}/></svg>
         </button>
       </div>
       <dl class="facts">
@@ -333,7 +343,7 @@
       {#if lead.calm}<p>{lead.calm}</p>{/if}
     {:else}
       <h1>색이 진한 길일수록 뷰가 좋아요</h1>
-      <p>길이나 동그란 스팟을 누르면 무엇이 보이는지 알려 드려요.</p>
+      <p>길을 누르면 그 길에서 무엇이 보이는지 알려 드려요.</p>
     {/if}
   </section>
 
@@ -388,6 +398,8 @@
   .loader { width: 18px; height: 18px; border-radius: 9px; border: 2.5px solid var(--line); border-top-color: var(--ink); animation: spin 0.9s linear infinite; flex: none }
   .toast { position: absolute; left: 50%; bottom: calc(var(--sheet-h, 150px) + 76px); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 12px 16px; border-radius: 14px; background: var(--ink); color: var(--bg); font-size: 14px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25) }
   :global(.me) { width: 18px; height: 18px; border-radius: 9px; background: var(--acc); border: 3px solid var(--bg); box-shadow: 0 0 0 6px color-mix(in srgb, var(--acc) 25%, transparent) }
+  :global(.pin) { display: none !important }
+  :global(.pins-on .pin) { display: grid !important }
   :global(.pin) { width: 44px; height: 44px; padding: 0; border: 0; background: transparent; display: grid; place-items: center }
   :global(.pin .core) { width: 18px; height: 18px; border-radius: 9px; border: 3px solid var(--bg); box-shadow: 0 0 0 1.5px var(--ink), 0 2px 6px rgba(0, 0, 0, 0.3); transition: transform 0.15s }
   :global(.pin.k .core) { background: var(--dot-k) }
