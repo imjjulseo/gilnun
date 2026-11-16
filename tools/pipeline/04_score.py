@@ -55,7 +55,11 @@ D['f_calm'] = np.clip(f_traffic * np.where(D.calm_place, 1.15, 1.0) * np.where(D
 inl = D.zone == 'inland'
 def nrm(v, lo=10, hi=99.5, ref=inl):
     a, b = np.percentile(v[ref], [lo, hi]); return np.clip((v - a) / max(b - a, 1e-9), 0, 1)
-S = dict(sky=nrm(D.c_sky), depth=nrm(D.logd), pano=nrm(D.pano300), water=np.clip(D.c_water / 0.03, 0, 1), nature=np.clip(D.c_nat / 0.25, 0, 1), landmark=D.lm.values)
+# 하늘 v3: 눈높이 -15도부터 +45도까지, 고도각 cos 가중(입체각 비율). 걸으며 시선을 드는 범위까지 센다.
+_lo, _hi = np.radians(-15), np.radians(45)
+D['c_sky45'] = ((np.sin(_hi) - np.sin(np.clip(hz, _lo, _hi))) / (np.sin(_hi) - np.sin(_lo))).mean(1)
+SKY0, SKY1, NAT1 = 0.12, 0.50, 0.35           # 절대 기준: 하늘 입체각 12% 이하 0점, 50% 이상 만점. 녹지는 시야 35%면 만점
+S = dict(sky=np.clip((D.c_sky45 - SKY0) / (SKY1 - SKY0), 0, 1), depth=nrm(D.logd), pano=nrm(D.pano300), water=np.clip(D.c_water / 0.03, 0, 1), nature=np.clip(D.c_nat / NAT1, 0, 1), landmark=D.lm.values)
 W = dict(sky=0.25, depth=0.20, pano=0.15, water=0.20, nature=0.15, landmark=0.05)
 for k_, v in S.items(): D['s_' + k_] = np.asarray(v)
 D['score_view'] = 100 * sum(W[k_] * D['s_' + k_] for k_ in W)      # 순수 조망 (하늘 트인 길 포함)
@@ -84,7 +88,7 @@ I = D[inl & ~D.deck & ~D.crosswalk & (D.d_major > 25)]
 spots = nms(I[I.pct_inland >= 90], 'prom', 20)            # 도심 상위 10% 중 주변 대비 가장 돌출된 곳
 def why(t):
     p = sorted(((W[k_] * getattr(t, 's_' + k_), k_) for k_ in W), reverse=True)[:2]; return '+'.join(k_ for _, k_ in p)
-rows = [dict(rank=i + 1, lat=round(t.lat, 6), lon=round(t.lon, 6), dong=t.dong, score=round(t.score, 1), pct_inland=round(t.pct_inland, 1), prominence=round(t.prom, 1), sky=round(t.c_sky, 2), water=round(t.c_water, 3),
+rows = [dict(rank=i + 1, lat=round(t.lat, 6), lon=round(t.lon, 6), dong=t.dong, score=round(t.score, 1), pct_inland=round(t.pct_inland, 1), prominence=round(t.prom, 1), sky=round(t.c_sky45, 2), water=round(t.c_water, 3),
              pano300=int(t.pano300), calm=bool(t.calm_place), d_major=int(min(t.d_major, 999)), ground_m=round(t.gz, 1), d_river=int(t.d_river), why=why(t)) for i, t in enumerate(spots)]
 pd.DataFrame(rows).to_csv(O + '/pilot_spots.csv', index=False, encoding='utf-8-sig'); print(pd.DataFrame(rows).to_string(index=False))
 # ---- 지도

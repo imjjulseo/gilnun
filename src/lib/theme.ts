@@ -5,6 +5,7 @@ export interface Theme {
   bg: string; surf: string; line: string; ink: string; sub: string; acc: string; onAcc: string
   land: string; river: string; park: string; block: string; road: string; label: string
   none: string; ramp: Record<Kind, [string, string, string, string]>; dot: Record<Kind, string>
+  dusk: { ramp: [string, string, string, string]; dot: string }   // 노을 때 하늘 길 색
 }
 export const THEMES: Record<ThemeName, Theme> = {
   light: {
@@ -13,14 +14,27 @@ export const THEMES: Record<ThemeName, Theme> = {
     none: '#D5DCE4',
     ramp: { k: ['#CFEAFB', '#8FD3F7', '#4DB8EE', '#149BD8'], w: ['#B9C3E6', '#7F90D0', '#4257A8', '#1B2A6B'], g: ['#CFE8D2', '#93D0A0', '#4FAE68', '#1E7A3C'] },
     dot: { k: '#4DB8EE', w: '#2B3D8C', g: '#4FAE68' },
+    dusk: { ramp: ['#FBE1D2', '#F6B894', '#EC8863', '#CF5E4A'], dot: '#EC8863' },
   },
   night: {
-    bg: '#141829', surf: '#1E2440', line: '#2E3558', ink: '#F5EFE7', sub: '#B4BAD0', acc: '#FFA872', onAcc: '#1A1420',
+    bg: '#141829', surf: '#1E2440', line: '#2E3558', ink: '#F5EFE7', sub: '#B4BAD0', acc: '#F4E4C9', onAcc: '#1A1420',
     land: '#181D33', river: '#1B2C52', park: '#1A2A30', block: '#20263F', road: '#242B49', label: '#8E96B4',
     none: '#333A60',
     ramp: { k: ['#24506B', '#2F7DA8', '#4FB4E6', '#A5E1FF'], w: ['#2E2F6E', '#4A4CB0', '#7375E8', '#B4B6FF'], g: ['#2C5A44', '#3C8660', '#55B884', '#96E3B4'] },
     dot: { k: '#4FB4E6', w: '#7375E8', g: '#55B884' },
+    dusk: { ramp: ['#4E3452', '#94506A', '#E27C62', '#FFC28F'], dot: '#E27C62' },
   },
+}
+const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16))
+function mix(a: string, b: string, t: number): string {
+  const x = hex(a), y = hex(b)
+  return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('')
+}
+/** 하늘 길 색을 노을 색 쪽으로 t만큼 옮긴 테마. 나이트 모드는 늘 노을 하늘이다. */
+export function withDusk(name: ThemeName, t: number): Theme {
+  const b = THEMES[name], m = name === 'night' ? 1 : Math.max(0, Math.min(1, t))
+  if (m === 0) return b
+  return { ...b, ramp: { ...b.ramp, k: b.ramp.k.map((c, i) => mix(c, b.dusk.ramp[i], m)) as Theme['ramp']['k'] }, dot: { ...b.dot, k: mix(b.dot.k, b.dusk.dot, m) } }
 }
 const BASE = 'https://tiles.openfreemap.org/styles/positron'
 let cache: StyleSpecification | null = null

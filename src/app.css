@@ -5,5 +5,6 @@ button{font:inherit;color:inherit;cursor:pointer;-webkit-tap-highlight-color:tra
 button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
 .maplibregl-ctrl-attrib{font-size:10px;background:color-mix(in srgb,var(--bg) 78%,transparent)!important;color:var(--sub)}
 .maplibregl-ctrl-attrib a{color:var(--sub)}
-.maplibregl-ctrl-bottom-right{bottom:var(--sheet-h,150px)}
+.maplibregl-ctrl-bottom-right{bottom:calc(var(--sheet-h,150px) + 70px)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.maplibregl-ctrl-attrib-inner{color:var(--sub)}
