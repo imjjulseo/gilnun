@@ -58,6 +58,8 @@
   let sugs = $state<({ id: string; extra: number } | null)[]>([])
   let dragFrom = $state(-1)
   let dragTo = $state(-1)
+  // 5단계: 공유
+  let incoming = $state<Place[] | null>(null)
   const theme = $derived(withDusk(themeName, dusk))
 
   let mapEl: HTMLDivElement
@@ -330,7 +332,34 @@
     ;(e.target as HTMLElement).addEventListener('pointerup', up, { once: true })
     ;(e.target as HTMLElement).addEventListener('pointercancel', up, { once: true })
   }
+  /** 갈 곳과 길 고르기를 주소에 담는다: ?c=<base64url(JSON)> */
+  function shareUrl(): string {
+    const rows = go.map((g) => [g.name, +g.lon.toFixed(6), +g.lat.toFixed(6), g.cat, g.sub === '스팟' ? 's' : ''])
+    const b = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify({ v: 1, m: routeMode, g: rows })))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    return `${location.origin}${location.pathname}?c=${b}`
+  }
+  function readShared(): { m: ModeId; g: Place[] } | null {
+    const c = new URLSearchParams(location.search).get('c'); if (!c) return null
+    try {
+      const bin = atob(c.replace(/-/g, '+').replace(/_/g, '/'))
+      const j = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0))))
+      const g: Place[] = (j.g as [string, number, number, number, string][]).slice(0, MAX_GO).map((r, i) => ({ id: `sh${i}-${r[1]},${r[2]}`, name: String(r[0]).slice(0, 60), lon: +r[1], lat: +r[2], cat: Number.isInteger(r[3]) ? r[3] : -1, sub: r[4] === 's' ? '스팟' : '', addr: '', floor: null }))
+      return g.every((p) => isFinite(p.lon) && isFinite(p.lat)) && g.length ? { m: MODES.some((x) => x.id === j.m) ? j.m : 'balance', g } : null
+    } catch { return null }
+  }
+  async function share() {
+    const url = shareUrl(), title = `트이길 동선 ${go.length}곳`
+    try {
+      if (navigator.share) { await navigator.share({ title, text: go.map((g, i) => `${i + 1}. ${g.name}`).join('\n'), url }); return }
+      await navigator.clipboard.writeText(url); say('동선 링크를 복사했어요.')
+    } catch (e) { if ((e as Error)?.name !== 'AbortError') say('링크를 만들지 못했어요. 잠시 뒤에 다시 해 주세요.') }
+  }
+  function takeShared(replace: boolean) {
+    if (replace && incoming) { go = incoming; store.set('gn.go', go); incoming = null; history.replaceState(null, '', location.pathname); makeRoute() }
+    else { incoming = null; history.replaceState(null, '', location.pathname); mode = 'idle' }
+  }
   const mins = (m: number) => Math.max(1, Math.round(m / WALK))
+  const timeText = (m: number) => { const t = mins(m); return t < 60 ? `${t}분` : `${Math.floor(t / 60)}시간${t % 60 ? ` ${t % 60}분` : ''}` }
   const kmText = (m: number) => (m < 1000 ? `${Math.round(m / 10) * 10}m` : `${(m / 1000).toFixed(1)}km`)
 
   // ---- 검색
@@ -457,7 +486,15 @@
         map = new maplibregl.Map({ container: mapEl, style, center: region.center, zoom: region.zoom, minZoom: 11, maxZoom: 19, attributionControl: { compact: true, customAttribution: '서울시, 국토지리정보원, 소상공인시장진흥공단' }, dragRotate: false, pitchWithRotate: false })
         map.touchZoomRotate.disableRotation()
         if (import.meta.env.DEV || location.hostname === 'localhost') (window as any).__tg = { map: () => map }
-        map.on('load', () => { addOverlay(); addPins(); drawGo() })
+        map.on('load', () => {
+          addOverlay(); addPins(); drawGo()
+          const sh = readShared()
+          if (sh) {
+            routeMode = sh.m
+            if (!go.length) { go = sh.g; store.set('gn.go', go); history.replaceState(null, '', location.pathname); makeRoute() }
+            else { incoming = sh.g; mode = 'idle' }
+          }
+        })
         map.on('moveend', nearLater)
         map.on('click', (e) => {
           if (Date.now() < quietClick) return
@@ -592,7 +629,7 @@
           {#each MODES as m (m.id)}
             {@const r = routes.find((x) => x.mode === m.id)!}
             <button type="button" role="tab" class="tab" aria-selected={routeMode === m.id} onclick={() => pickMode(m.id)}>
-              <span>{m.label}</span><strong>{mins(r.len)}분</strong><span class="km">{kmText(r.len)}</span>
+              <span>{m.label}</span><strong>{timeText(r.len)}</strong><span class="km">{kmText(r.len)}</span>
             </button>
           {/each}
         </div>
@@ -609,7 +646,7 @@
             {#each go as g, i (g.id)}
               <li><span class="num sm" aria-hidden="true">{i + 1}</span><span class="nm">{g.name}</span></li>
               {#if i < go.length - 1 && current.legs[i]}
-                <li class="leg">걸어서 {mins(current.legs[i].len)}분, {kmText(current.legs[i].len)}</li>
+                <li class="leg">걸어서 {timeText(current.legs[i].len)}, {kmText(current.legs[i].len)}</li>
                 {#if sugs[i]}
                   {@const sp = spots.find((s) => s.id === sugs[i]!.id)}
                   {#if sp}
@@ -622,7 +659,10 @@
               {/if}
             {/each}
           </ol>
-          {#if go.length >= 3}<button type="button" class="wide ghostbtn" onclick={tidyOrder} disabled={routeBusy}>순서 정리하기</button>{/if}
+          <div class="two">
+            {#if go.length >= 3}<button type="button" class="wide ghostbtn" onclick={tidyOrder} disabled={routeBusy}>순서 정리하기</button>{/if}
+            <button type="button" class="wide primary" onclick={share}>공유하기</button>
+          </div>
         {/if}
       {/if}
     {:else if mode === 'spot' && spot}
@@ -666,7 +706,7 @@
           {/each}
         </ul>
       {:else}
-        <p>이 화면에는 뷰 좋은 곳이 없어요. 지도를 넓혀서 다시 눌러 주세요.</p>
+        <p>이 화면에는 뷰 좋은 곳이 없어요. 지도를 옮기거나 넓혀 보세요.</p>
       {/if}
     {:else if mode === 'link' && picked && lead}
       <div class="row">
@@ -680,6 +720,14 @@
         <div><dt>해발</dt><dd>{picked.z}m</dd></div>
       </dl>
       {#if lead.calm}<p>{lead.calm}</p>{/if}
+    {:else if incoming}
+      <h1>공유받은 동선이에요</h1>
+      <p>{incoming.map((g) => g.name).join(', ')}</p>
+      <p>지금 갈 곳 {go.length}곳을 이 동선으로 바꿀까요?</p>
+      <div class="two">
+        <button type="button" class="wide ghostbtn" onclick={() => takeShared(false)}>그대로 두기</button>
+        <button type="button" class="wide primary" onclick={() => takeShared(true)}>바꾸기</button>
+      </div>
     {:else}
       <h1>색이 진한 길일수록 뷰가 좋아요</h1>
       <p>길을 누르면 그 길에서 무엇이 보이는지 알려 드려요. 지도를 길게 누르면 그 자리를 갈 곳에 넣을 수 있어요.</p>
@@ -701,7 +749,7 @@
         </button>
         <label class="sr" for="q">가게 이름이나 공유한 글자</label>
         <textarea id="q" rows="1" bind:this={searchEl} bind:value={query} placeholder="가게 이름이나 공유한 글자를 넣어 주세요" autocomplete="off" enterkeyhint="search"
-          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !looksShared(query)) { e.preventDefault(); (e.currentTarget as HTMLElement).blur() } }}></textarea>
+          onkeydown={(e) => { if (e.key === 'Escape') closeSearch(); else if (e.key === 'Enter' && !e.shiftKey && !looksShared(query)) { e.preventDefault(); (e.currentTarget as HTMLElement).blur() } }}></textarea>
         {#if query}
           <button type="button" class="icon" onclick={() => { query = ''; searchEl?.focus() }} aria-label="지우기">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -819,6 +867,8 @@
   .legs .nm { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
   .legs .leg { padding-left: 11px; margin-left: 11px; border-left: 2px dashed var(--line); color: var(--sub); font-size: 13px; min-height: 26px }
   .legs .sug { margin-left: 11px; padding: 10px 12px; border-radius: 12px; background: var(--surf); border: 1px solid var(--line); justify-content: space-between; font-size: 14px }
+  .two { display: flex; gap: 8px }
+  .two > * { flex: 1 }
   .num.sm { width: 24px; height: 24px; font-size: 13px }
   .mini { height: 44px; padding: 0 14px; border-radius: 12px; border: 0; background: var(--acc); color: var(--on-acc); font-weight: 700; flex: none }
   .rm { color: var(--sub); border: 1px solid var(--line); background: var(--surf) }
