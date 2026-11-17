@@ -50,6 +50,7 @@
   let cat = $state<number | null>(null)
   let searchEl = $state<HTMLTextAreaElement | null>(null)
   let viewTick = $state(0)
+  let seen = $state(store.get<boolean>('gn.seen', false))
   // 4단계: 동선
   let routes = $state<RouteResult[] | null>(null)
   let routeMode = $state<ModeId>(store.get<ModeId>('gn.mode', 'balance'))
@@ -321,16 +322,17 @@
     const row = (e.currentTarget as HTMLElement).closest('li')!, list = row.parentElement!
     const rows = [...list.children] as HTMLElement[], tops = rows.map((r) => r.getBoundingClientRect())
     dragFrom = i; dragTo = i
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    const el = e.currentTarget as HTMLElement
+    el.setPointerCapture(e.pointerId); e.preventDefault()
     const move = (ev: PointerEvent) => {
       let t = rows.length - 1
       for (let k = 0; k < tops.length; k++) if (ev.clientY < tops[k].top + tops[k].height / 2) { t = k; break }
       dragTo = t
     }
-    const up = () => { (e.target as HTMLElement).removeEventListener('pointermove', move); moveGo(dragFrom, dragTo); dragFrom = dragTo = -1 }
-    ;(e.target as HTMLElement).addEventListener('pointermove', move)
-    ;(e.target as HTMLElement).addEventListener('pointerup', up, { once: true })
-    ;(e.target as HTMLElement).addEventListener('pointercancel', up, { once: true })
+    const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); moveGo(dragFrom, dragTo); dragFrom = dragTo = -1 }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
   }
   /** 갈 곳과 길 고르기를 주소에 담는다: ?c=<base64url(JSON)> */
   function shareUrl(): string {
@@ -528,7 +530,7 @@
       <span class="brand">트이길</span>
       <button type="button" class="find" onclick={openSearch} aria-haspopup="dialog">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-        <span>가게나 장소 찾기</span>
+        <span>장소, 주소 검색</span>
       </button>
       <button type="button" class="icon" onclick={switchTheme} aria-label={themeName === 'light' ? '밤 화면으로 바꾸기' : '낮 화면으로 바꾸기'}>
         {#if themeName === 'light'}
@@ -551,21 +553,20 @@
   {#if ready && mode !== 'route'}
     <button type="button" class="pill nearby" onclick={toggleNear} aria-pressed={nearOn}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-6 4 4 3-3 6 5"/><circle cx="17" cy="6.5" r="2.5"/></svg>
-      주변 뷰 좋은 곳
+      주변 트인 길
     </button>
   {/if}
   <button type="button" class="icon locate" onclick={locate} aria-label="현재 위치로 가기" aria-busy={locating}>
     <svg class:spin={locating} width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22"/></svg>
   </button>
 
-  <section class="sheet" bind:this={sheetEl} aria-live="polite">
+  <section class="sheet" class:hidden={ready && !failed && mode === 'idle' && seen && !go.length && !incoming} bind:this={sheetEl} aria-live="polite">
     <div class="grip" aria-hidden="true"></div>
     {#if failed}
       <h1>{failed === 'gl' ? '이 브라우저에서는 지도를 그릴 수 없어요' : '지도를 불러오지 못했어요'}</h1>
       <p>{failed === 'gl' ? '크롬이나 사파리 최신 버전에서 열어 주세요.' : '인터넷 연결을 확인하고 화면을 새로 고쳐 주세요.'}</p>
     {:else if !ready}
       <div class="row start"><span class="loader" aria-hidden="true"></span><h1>지도를 그리고 있어요</h1></div>
-      <p>길마다 보이는 것을 색으로 칠하는 중이에요.</p>
     {:else if mode === 'place' && place}
       {@const saved = isGo(place)}
       {@const backToGo = placeFrom === 'go' && go.length > 0}
@@ -588,7 +589,6 @@
         <h1>갈 곳 {go.length}곳</h1>
         {@render x('갈 곳 목록 닫기')}
       </div>
-      {#if go.length > 1}<p>손잡이를 끌어서 순서를 바꿀 수 있어요.</p>{/if}
       <ol class="list">
         {#each go as g, i (g.id)}
           <li class="gorow" class:lift={dragFrom === i} class:gap-above={dragFrom >= 0 && dragTo === i && dragFrom > i} class:gap-below={dragFrom >= 0 && dragTo === i && dragFrom < i}>
@@ -610,8 +610,6 @@
       </ol>
       {#if go.length >= 2}
         <button type="button" class="wide primary" onclick={() => makeRoute()}>동선 잇기</button>
-      {:else}
-        <p>두 곳 이상 넣으면 뷰 좋은 길로 이어 드려요.</p>
       {/if}
     {:else if mode === 'route'}
       <div class="row">
@@ -683,13 +681,12 @@
       </button>
     {:else if mode === 'near'}
       <div class="row">
-        <h1>주변 뷰 좋은 곳</h1>
+        <h1>주변 트인 길</h1>
         <button type="button" class="icon ghost" onclick={toggleNear} aria-label="목록 닫기">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
       {#if near.length}
-        <p>{nearFrom === 'me' ? '현재 위치에서 가까운 순서예요.' : '지도 가운데에서 가까운 순서예요.'}</p>
         <ul class="list">
           {#each near as n (n.type === 'spot' ? n.spot.id : 'l' + n.f.id)}
             {@const kind = n.type === 'spot' ? n.spot.kind : (n.f.properties.kind as Kind)}
@@ -706,7 +703,7 @@
           {/each}
         </ul>
       {:else}
-        <p>이 화면에는 뷰 좋은 곳이 없어요. 지도를 옮기거나 넓혀 보세요.</p>
+        <p>이 화면에는 트인 길이 없어요.</p>
       {/if}
     {:else if mode === 'link' && picked && lead}
       <div class="row">
@@ -729,9 +726,10 @@
         <button type="button" class="wide primary" onclick={() => takeShared(true)}>바꾸기</button>
       </div>
     {:else}
-      <h1>색이 진한 길일수록 뷰가 좋아요</h1>
-      <p>길을 누르면 그 길에서 무엇이 보이는지 알려 드려요. 지도를 길게 누르면 그 자리를 갈 곳에 넣을 수 있어요.</p>
-      {#if go.length}
+      {#if !seen}
+        <h1>색이 진한 길일수록 뷰가 좋아요</h1>
+        <button type="button" class="wide ghostbtn" onclick={() => { seen = true; store.set('gn.seen', true) }}>알겠어요</button>
+      {:else if go.length}
         <button type="button" class="item" onclick={() => (mode = 'go')}>
           <span class="num" aria-hidden="true">{go.length}</span>
           <span class="txt"><strong>갈 곳 {go.length}곳</strong><span>{goSummary}</span></span>
@@ -748,7 +746,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
         </button>
         <label class="sr" for="q">가게 이름이나 공유한 글자</label>
-        <textarea id="q" rows="1" bind:this={searchEl} bind:value={query} placeholder="가게 이름이나 공유한 글자를 넣어 주세요" autocomplete="off" enterkeyhint="search"
+        <textarea id="q" rows="1" bind:this={searchEl} bind:value={query} placeholder="장소, 주소 검색" autocomplete="off" enterkeyhint="search"
           onkeydown={(e) => { if (e.key === 'Escape') closeSearch(); else if (e.key === 'Enter' && !e.shiftKey && !looksShared(query)) { e.preventDefault(); (e.currentTarget as HTMLElement).blur() } }}></textarea>
         {#if query}
           <button type="button" class="icon" onclick={() => { query = ''; searchEl?.focus() }} aria-label="지우기">
@@ -771,17 +769,16 @@
               <span class="txt"><strong>{shared.place.name}</strong><span>{[shared.place.sub, shared.place.addr, floorText(shared.place.floor)].filter(Boolean).join(', ')}</span></span>
               {@render chevron()}
             </button>
+          {:else if !shared.addr}
+            <p>{shared.name}을 찾지 못했어요. 지금은 {region?.name} 근처만 찾을 수 있어요.</p>
           {:else}
             <p>{shared.addr} 주소를 찾지 못했어요. 지금은 {region?.name} 근처만 찾을 수 있어요. 지도를 길게 눌러 직접 고를 수도 있어요.</p>
           {/if}
         {:else if looksShared(query)}
           <p>공유한 글자에서 주소를 찾지 못했어요. 가게 이름만 넣어 보거나 지도를 길게 눌러 직접 골라 주세요.</p>
-        {:else if !query.trim() && cat === null}
-          <p>가게 이름을 쓰거나 업종을 골라 주세요. 네이버지도에서 공유한 글자를 그대로 붙여 넣어도 돼요.</p>
-        {:else if !results.length}
+        {:else if (query.trim() || cat !== null) && !results.length}
           <p>찾는 가게가 없어요. 지금은 {region?.name} 근처만 찾을 수 있어요.</p>
-        {:else}
-          <p>{meAt ? '현재 위치에서' : '지도 가운데에서'} 가까운 순서예요.</p>
+        {:else if results.length}
           <ul class="list">
             {#each results as r (r.p.id)}
               <li>
@@ -818,13 +815,14 @@
   .chip { height: 44px; padding: 0 16px; display: flex; align-items: center; gap: 8px; border-radius: 22px; border: 1.5px solid var(--line); background: var(--bg); color: var(--sub); font-size: 14px; font-weight: 500; white-space: nowrap; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08); transition: border-color 0.15s, color 0.15s }
   .chip.on { border-color: var(--ink); color: var(--ink); font-weight: 700 }
   .dot { width: 10px; height: 10px; border-radius: 5px; transition: background 0.15s }
-  .locate { position: absolute; right: 16px; bottom: calc(var(--sheet-h, 150px) + 16px); width: 48px; height: 48px; border-radius: 24px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14) }
+  .locate { position: absolute; right: 16px; bottom: calc(var(--sheet-h, 150px) + 16px + env(safe-area-inset-bottom)); width: 48px; height: 48px; border-radius: 24px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14) }
   .pill { height: 48px; padding: 0 18px 0 14px; display: flex; align-items: center; gap: 8px; border-radius: 24px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; font-weight: 700; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14) }
-  .nearby { position: absolute; left: 16px; bottom: calc(var(--sheet-h, 150px) + 16px) }
+  .nearby { position: absolute; left: 16px; bottom: calc(var(--sheet-h, 150px) + 16px + env(safe-area-inset-bottom)) }
   .nearby[aria-pressed='true'] { background: var(--ink); color: var(--bg); border-color: var(--ink) }
   .spin { animation: spin 1.1s linear infinite }
   @keyframes spin { to { transform: rotate(360deg) } }
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; max-width: 520px; max-height: 50vh; overflow-y: auto; margin: 0 auto; padding: 10px 20px calc(20px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 10px; background: var(--bg); border-radius: 24px 24px 0 0; box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.14) }
+  .sheet.hidden { display: none }
   .grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); align-self: center; flex: none }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px }
   .row.start { justify-content: flex-start }

@@ -28,9 +28,16 @@ export class Places {
   }
   /** 공유 글자에서 이름과 주소를 읽어 장소를 찾는다. */
   fromShare(text: string): { place: Place | null; name: string; addr: string; found: 'shop' | 'addr' | 'none' } | null {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^https?:\/\//.test(l) && !/^\[.*(지도|맵|map).*\]$/i.test(l))
+    // 링크와 [네이버지도], [카카오맵] 같은 꼬리표는 줄 안에 있어도 지운다
+    const lines = text.split(/\r?\n/).map((l) => l.replace(/https?:\/\/\S+/g, '').replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean)
     const a = lines.map(addrKey).find(Boolean)
-    if (!a) return null
+    if (!a) {
+      // 카카오맵처럼 이름만 오는 경우: 이름으로 찾는다
+      const name = lines[0] ?? ''; if (!name) return null
+      const nn = norm(name), hit = this.list.filter((p) => norm(p.name) === nn)
+      const part = hit.length ? hit : this.list.filter((p) => norm(p.name).includes(nn) || (norm(p.name).length >= 3 && nn.includes(norm(p.name))))
+      return { place: part[0] ?? null, name, addr: '', found: part.length ? 'shop' : 'none' }
+    }
     const name = lines.find((l) => !addrKey(l)) ?? ''
     const ai = this.addrIdx.get(a.replace(/\s/g, ''))
     const same = this.list.filter((p) => p.addr.replace(/\s/g, '') === a.replace(/\s/g, ''))
