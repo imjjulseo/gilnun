@@ -5,7 +5,7 @@
 import os, json, numpy as np, pandas as pd, geopandas as gpd, shapely
 from shapely.ops import substring
 from scipy.spatial import cKDTree
-VERSION = '2026-11-17.pilot4'
+VERSION = '2026-11-17.pilot5'
 U = os.environ.get('VIEWAPP', '/mnt/user-data/uploads/viewapp')
 OUT = os.environ.get('APPDATA', os.path.join(os.path.dirname(__file__), '..', 'public', 'data'))
 PIECE = 2                                     # 샘플점(10m 간격) 몇 개를 한 조각으로 묶을지
@@ -16,7 +16,8 @@ L = L[L.link.isin(D.link.unique())].drop_duplicates('link').set_index('link')
 to_ll = __import__('pyproj').Transformer.from_crs(5186, 4326, always_xy=True)
 to_xy = __import__('pyproj').Transformer.from_crs(4326, 5186, always_xy=True)
 q = lambda v: int(round(float(np.clip(v, 0, 1)) * 100))
-feats = []; fid = 0
+feats = []; fid = 0; rows_of = []          # 조각마다 D의 행 번호(지평선 배열과 같은 순서)
+assert (D.index == np.arange(len(D))).all(), 'scored.parquet 행 번호가 0부터 이어져야 지평선 배열과 맞는다'
 for link, g in D.groupby('link'):
     if link not in L.index: continue
     line = L.geometry[link]; ln = line.length
@@ -30,13 +31,28 @@ for link, g in D.groupby('link'):
         seg = substring(line, a, b)
         if seg.geom_type != 'LineString' or seg.length < 0.5: continue
         xs, ys = to_ll.transform(*np.asarray(seg.coords).T)
-        fid += 1
+        fid += 1; rows_of.append(np.asarray(s.index))
         feats.append(dict(type='Feature', id=fid, geometry=dict(type='LineString', coordinates=[[round(x, 6), round(y, 6)] for x, y in zip(xs, ys)]),
             properties=dict(k=q(s.open.mean()), w=q(s.s_water.mean()), g=q(s.s_nature.mean()), c=int(round(min(s.f_calm.mean(), 1.15) * 100)),
                             ps=int(round(s.c_sky45.mean() * 100)), pw=round(float(s.c_water.mean()) * 100, 1), pg=int(round(s.c_nat.mean() * 100)),
                             pa=int(round(s.pano300.mean())), z=int(round(s.gz.mean())), r=1 if (s.zone == 'river').any() else 0)))
 os.makedirs(f'{OUT}/pilot', exist_ok=True)
 json.dump(dict(type='FeatureCollection', features=feats), open(f'{OUT}/pilot/links.json', 'w'), separators=(',', ':'))
+
+# ---- 지평선(노을, 그늘용): 조각마다 방위 5도 간격 72칸의 지평선 고도. horizon.bin
+# 머리 16바이트: uint32 'GNHZ'(0x5A484E47), 조각 수, 칸 수(72), 0. 그 뒤 조각 순서대로 칸마다 uint8 = (고도(도) + 10) × 4, 0~255로 자른다(-10~53.75도).
+# 앱은 오늘 해 지는 방위의 고도를 읽어 5도 아래면 해가 지는 모습이 보이는 길로 본다.
+HZ = np.degrees(np.vstack([np.load(f'{U}/work/pilot/hz_e1_6_p{i}of2.npy') for i in range(2)]).astype(np.float32))
+assert len(HZ) == len(D), f'지평선 배열 {len(HZ)}행과 점수 {len(D)}행이 달라요'
+BINS = 72; ker = np.zeros(360, np.float32); ker[[-2, -1, 0, 1, 2]] = 0.2
+hzbin = np.zeros((len(feats), BINS), np.uint8)
+for i, rows in enumerate(rows_of):
+    prof = HZ[rows].mean(0)                                          # 조각 안 점들의 평균(방위 360칸)
+    sm = np.real(np.fft.ifft(np.fft.fft(prof) * np.fft.fft(ker)))     # 5도 폭으로 고르게(원형)
+    hzbin[i] = np.clip(np.round((sm[::5] + 10) * 4), 0, 255).astype(np.uint8)
+with open(f'{OUT}/pilot/horizon.bin', 'wb') as f:
+    f.write(np.array([0x5A484E47, len(feats), BINS, 0], np.uint32).tobytes()); f.write(hzbin.tobytes())
+print('horizon.bin', os.path.getsize(f'{OUT}/pilot/horizon.bin') // 1024, 'KB', '서쪽(270도) 고도 5도 미만 조각', int((hzbin[:, 54] / 4 - 10 < 5).sum()))
 
 # ---- 스팟: 이름과 설명용 값
 S = pd.read_csv(f'{U}/out/pilot_spots.csv')
@@ -87,7 +103,7 @@ for r in S.itertuples():
 json.dump(spots, open(f'{OUT}/pilot/spots.json', 'w'), ensure_ascii=False, separators=(',', ':'))
 b = gpd.GeoSeries(L.geometry, crs=5186).to_crs(4326).total_bounds
 json.dump(dict(version=VERSION, note='임시 가중치. 하늘은 +45도까지 절대 기준. 지형은 1:5000과 1:1000 등고선, 수목은 일부만 반영', regions=[dict(id='pilot', name='노량진, 본동', bbox=[round(float(v), 5) for v in b], center=[126.9445, 37.5125], zoom=14.6,
-          links='pilot/links.json', spots='pilot/spots.json')]), open(f'{OUT}/manifest.json', 'w'), ensure_ascii=False, indent=1)
+          links='pilot/links.json', spots='pilot/spots.json', horizon='pilot/horizon.bin')]), open(f'{OUT}/manifest.json', 'w'), ensure_ascii=False, indent=1)
 print(len(feats), 'pieces', os.path.getsize(f'{OUT}/pilot/links.json') // 1024, 'KB')
 v = pd.DataFrame([f['properties'] for f in feats]); print(v[['k', 'w', 'g', 'ps']].describe(percentiles=[.25, .5, .75, .9, .97]).round(0).to_string())
 for s_ in spots: print(s_['rank'], s_['title'], s_['kind'], s_['dir'], s_['west'], s_['sky'])

@@ -6,15 +6,21 @@ import { rate, type Prefs } from './score'
 
 export type ModeId = 'fast' | 'balance' | 'view'
 export const MODES: { id: ModeId; label: string; lambda: number; cap: number }[] = [
-  { id: 'fast', label: '가장 빠른 길', lambda: 0, cap: 1 },
+  { id: 'fast', label: '빠른 길', lambda: 0, cap: 1 },
   { id: 'balance', label: '균형', lambda: 2.5, cap: 1.25 },
-  { id: 'view', label: '뷰 좋은 길', lambda: 8, cap: 1.6 },
+  { id: 'view', label: '트인 길', lambda: 8, cap: 1.6 },
 ]
+/** 트인 정도(0~100) -> 트인 길의 λ와 한도. 30이 예전 트인 길(λ8, 1.6배)과 같다. 100이면 2.5배까지 돌아가는 산책 길. */
+export function openness(t: number): { lambda: number; cap: number } {
+  const x = Math.max(0, Math.min(100, t)) / 100
+  if (x <= 0.3) { const k = x / 0.3; return { lambda: 2 + 6 * k, cap: 1.2 + 0.4 * k } }
+  const k = (x - 0.3) / 0.7; return { lambda: 8 + 22 * k, cap: 1.6 + 0.9 * k }
+}
 export const VIEW_FULL = 0.45
 export const WALK = 67                                   // 걷는 속도 m/분 (시속 4km)
 export interface Seg { coords: [number, number][]; kind: 'k' | 'w' | 'g' | 'n'; v: number; walk?: boolean }
 export interface Leg { len: number; segs: Seg[] }
-export interface RouteResult { mode: ModeId; len: number; legs: Leg[]; share: { k: number; w: number; g: number }; lambda: number }
+export interface RouteResult { mode: ModeId; len: number; legs: Leg[]; share: { k: number; w: number; g: number }; lambda: number; boost: number }
 
 export class Graph {
   N: number; E: number
@@ -72,11 +78,19 @@ export class Graph {
   }
   /** 간선 비용을 칩 설정과 λ로 다시 계산한다. viewOf[e]는 0~1. */
   viewOf = new Float32Array(0); kindOf = new Uint8Array(0)
+  /** 지금 상황(노을 등)에 따라 더해 주는 간선별 값(0~1). 없으면 null. */
+  boost: Float32Array | null = null
+  boosted = new Uint8Array(0)
   setPrefs(prefs: Prefs) {
     this.viewOf = new Float32Array(this.E); this.kindOf = new Uint8Array(this.E)
     for (let e = 0; e < this.E; e++) {
       const r = rate({ k: this.ev[4 * e], w: this.ev[4 * e + 1], g: this.ev[4 * e + 2], c: this.ev[4 * e + 3], ps: 0, pw: 0, pg: 0, pa: 0, z: 0, r: 0 }, prefs)
       this.viewOf[e] = r.v / 100; this.kindOf[e] = r.kind === 'k' ? 1 : r.kind === 'w' ? 2 : r.kind === 'g' ? 3 : 0
+    }
+    this.boosted = new Uint8Array(this.E)
+    if (this.boost && prefs.k) for (let e = 0; e < this.E; e++) {
+      const b = this.boost[e] * 0.6
+      if (b > this.viewOf[e]) { this.viewOf[e] = b; this.kindOf[e] = 1; this.boosted[e] = 1 }
     }
   }
   setLambda(l: number) {
@@ -113,6 +127,20 @@ export class Graph {
       for (let k = this.adjStart[u]; k < this.adjStart[u + 1]; k++) { const v = this.adjNode[k], nd = d[u] + this.el[this.adjEdge[k]]; if (nd < d[v]) { d[v] = nd; heap.push(v, nd) } }
     }
     return d
+  }
+  /** 비용 기준 다익스트라. 비용과 실제 길이를 함께 돌려준다. maxLen(m)을 넘는 곳은 더 보지 않는다. */
+  dijkstraCost(s: number, maxLen = 4000): { cost: Float64Array; len: Float64Array } {
+    const d = new Float64Array(this.N).fill(Infinity), len = new Float64Array(this.N).fill(Infinity), heap = new Heap(); d[s] = 0; len[s] = 0; heap.push(s, 0)
+    const done = new Uint8Array(this.N)
+    while (heap.size) {
+      const u = heap.pop(); if (done[u]) continue; done[u] = 1
+      if (len[u] > maxLen) continue
+      for (let k = this.adjStart[u]; k < this.adjStart[u + 1]; k++) {
+        const v = this.adjNode[k], e = this.adjEdge[k], nd = d[u] + this.cost[e]
+        if (nd < d[v]) { d[v] = nd; len[v] = len[u] + this.el[e]; heap.push(v, nd) }
+      }
+    }
+    return { cost: d, len }
   }
   pathLen(p: number[]) { let s = 0; for (const e of p) s += this.el[e]; return s }
   /** 경로를 색칠용 조각으로. 같은 종류와 비슷한 값이 이어지면 합친다. */
@@ -152,7 +180,7 @@ class Heap {
 }
 
 /** 여러 곳을 순서대로 잇는다. 모드마다 λ를 두고, 최단 길이의 cap배를 넘으면 λ를 줄여 다시 찾는다. */
-export function routeAll(G: Graph, stops: [number, number][], prefs: Prefs): RouteResult[] | { error: string } {
+export function routeAll(G: Graph, stops: [number, number][], prefs: Prefs, view?: { lambda: number; cap: number }): RouteResult[] | { error: string } {
   G.setPrefs(prefs)
   const snapped = stops.map(([x, y]) => G.snap(x, y))
   if (snapped.some(([n, d]) => n < 0 || d > 300)) return { error: 'far' }
@@ -167,7 +195,8 @@ export function routeAll(G: Graph, stops: [number, number][], prefs: Prefs): Rou
   }
   const fast = legsFor(0); if (!fast) return { error: 'nopath' }
   const out: RouteResult[] = []
-  for (const m of MODES) {
+  for (const m0 of MODES) {
+    const m = m0.id === 'view' && view ? { ...m0, ...view } : m0
     let lambda = m.lambda, legs = fast
     if (lambda > 0) {
       for (let tries = 0; tries < 6; tries++) {
@@ -186,15 +215,20 @@ export function routeAll(G: Graph, stops: [number, number][], prefs: Prefs): Rou
       return { len, segs: [walkIn, ...segs, walkOut] }
     })
     const all = legs.reduce((a, x) => a + x.len, 0) || 1
-    out.push({ mode: m.id, len: total, legs: L, lambda, share: { k: share.k / all, w: share.w / all, g: share.g / all } })
+    let bo = 0; for (const x of legs) for (const e of x.path) if (G.boosted[e]) bo += G.el[e]
+    out.push({ mode: m.id, len: total, legs: L, lambda, share: { k: share.k / all, w: share.w / all, g: share.g / all }, boost: bo / all })
   }
   return out
 }
 
-/** 첫 곳은 그대로 두고 나머지 순서를 가장 짧게 (Held-Karp, 8곳 이하 정확). 끝나는 곳은 자유. */
-export function bestOrder(G: Graph, stops: [number, number][]): number[] {
+/** 첫 곳은 그대로 두고 나머지 순서를 가장 짧게 (Held-Karp, 8곳 이하 정확). fixEnd면 마지막 곳도 그대로 둔다. */
+export function bestOrder(G: Graph, stops: [number, number][], fixEnd = false): number[] {
   const n = stops.length
-  if (n <= 2) return stops.map((_, i) => i)
+  if (n <= 2 || (fixEnd && n <= 3)) return stops.map((_, i) => i)
+  if (fixEnd) {
+    const inner = bestOrderEnd(G, stops)
+    return inner
+  }
   const sn = stops.map(([x, y]) => G.snap(x, y)[0])
   const D = sn.map((s) => { const d = G.dijkstra(s); return sn.map((t) => d[t]) })
   const m = n - 1, FULL = 1 << m
@@ -231,4 +265,27 @@ export function detours(G: Graph, stops: [number, number][], spots: { id: string
     }
     return best
   })
+}
+
+/** 처음과 끝을 고정하고 가운데 순서를 가장 짧게 */
+function bestOrderEnd(G: Graph, stops: [number, number][]): number[] {
+  const n = stops.length, sn = stops.map(([x, y]) => G.snap(x, y)[0])
+  const D = sn.map((s) => { const d = G.dijkstra(s); return sn.map((t) => d[t]) })
+  const mid = Array.from({ length: n - 2 }, (_, i) => i + 1), m = mid.length, FULL = 1 << m
+  const dp = new Float64Array(FULL * m).fill(Infinity), par = new Int8Array(FULL * m).fill(-1)
+  for (let j = 0; j < m; j++) dp[(1 << j) * m + j] = D[0][mid[j]]
+  for (let S = 1; S < FULL; S++) for (let j = 0; j < m; j++) {
+    if (!(S & (1 << j))) continue
+    const cur = dp[S * m + j]; if (cur === Infinity) continue
+    for (let k = 0; k < m; k++) {
+      if (S & (1 << k)) continue
+      const T = S | (1 << k), nd = cur + D[mid[j]][mid[k]]
+      if (nd < dp[T * m + k]) { dp[T * m + k] = nd; par[T * m + k] = j }
+    }
+  }
+  let best = 0, bd = Infinity
+  for (let j = 0; j < m; j++) { const v = dp[(FULL - 1) * m + j] + D[mid[j]][n - 1]; if (v < bd) { bd = v; best = j } }
+  const seq: number[] = []; let S = FULL - 1, j = best
+  while (j >= 0) { seq.push(mid[j]); const pj = par[S * m + j]; S &= ~(1 << j); j = pj }
+  return [0, ...seq.reverse(), n - 1]
 }

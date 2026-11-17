@@ -2,7 +2,8 @@
 export interface PoiData { cats: string[]; subs: string[]; rows: [string, number, number, number, number, number, number | null][] }
 export interface AddrData { addrs: string[]; pts: [number, number][] }
 export interface Place { id: string; name: string; sub: string; lon: number; lat: number; addr: string; floor: number | null; cat: number }
-export const CAT_LABEL = ['음식점', '카페와 디저트', '술집', '편의점']
+export const CAT_LABEL = ['음식점', '카페와 디저트', '술집', '편의점', '놀거리']
+export const CAT_SHORT = ['식당', '카페', '술집', '편의점', '놀거리']
 
 export class Places {
   list: Place[]
@@ -11,10 +12,34 @@ export class Places {
     addr.addrs.forEach((a, i) => this.addrIdx.set(a.replace(/\s/g, ''), i))
     this.list = poi.rows.map((r, i) => ({ id: 'q' + i, name: r[0], cat: r[1], sub: poi.subs[r[2]].replace(/\//g, ', '), lon: r[3], lat: r[4], addr: r[5] >= 0 ? addr.addrs[r[5]] : '', floor: r[6] }))
   }
-  /** 이름 검색. 빈칸과 대소문자를 무시한다. */
-  search(q: string, cat: number | null): Place[] {
-    const n = norm(q)
-    return this.list.filter((p) => (cat === null || p.cat === cat) && (!n || norm(p.name).includes(n)))
+  /** 데이터에 있는 업종 번호 */
+  get cats(): number[] { return [...new Set(this.list.map((p) => p.cat))].sort((a, b) => a - b) }
+  /** 이름이나 소분류로 찾는다. 빈칸과 대소문자를 무시한다. 이름이 앞에서 맞는 곳, 이름에 들어 있는 곳, 소분류가 맞는 곳 순서로 rank를 준다. */
+  search(q: string, cat: number | null, sub: string | null = null): { p: Place; rank: number }[] {
+    const n = norm(q), out: { p: Place; rank: number }[] = []
+    for (const p of this.list) {
+      if (cat !== null && p.cat !== cat) continue
+      if (sub && p.sub !== sub) continue
+      if (!n) { out.push({ p, rank: 0 }); continue }
+      const pn = norm(p.name)
+      if (pn.startsWith(n)) out.push({ p, rank: 0 })
+      else if (pn.includes(n)) out.push({ p, rank: 1 })
+      else if (n.length >= 2 && norm(p.sub).includes(n)) out.push({ p, rank: 2 })
+    }
+    return out
+  }
+  /** 도로명 주소로 찾기. '노량진로 100'처럼 길 이름과 번호가 있으면 그 건물 위치를 돌려준다. */
+  searchAddr(q: string): Place[] {
+    const n = q.replace(/\s/g, ''); if (n.length < 3 || !/\d/.test(n)) return []
+    const out: Place[] = []
+    this.addr.addrs.forEach((a, i) => { if (out.length < 5 && a.replace(/\s/g, '').includes(n)) out.push({ id: 'a' + i, name: a, sub: '주소', lon: this.addr.pts[i][0], lat: this.addr.pts[i][1], addr: a, floor: null, cat: -1 }) })
+    return out
+  }
+  /** 입력 중 추천어: 소분류 이름 */
+  suggest(q: string): string[] {
+    const n = norm(q); if (!n) return []
+    const subs = [...new Set(this.list.map((p) => p.sub))]
+    return subs.filter((s) => norm(s).includes(n)).sort((a, b) => norm(a).indexOf(n) - norm(b).indexOf(n) || a.length - b.length).slice(0, 4)
   }
   nearest(lon: number, lat: number, maxM: number): Place | null {
     let best: Place | null = null, bd = maxM

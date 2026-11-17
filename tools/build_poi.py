@@ -3,7 +3,7 @@
 출력: <APPDATA>/<지역>/poi.json, addr.json
 poi.json  = {cats:[...], subs:[...], rows:[[이름, 분류, 소분류, 경도, 위도, 주소번호, 층], ...]}
 addr.json = {addrs:[도로명주소...], pts:[[경도, 위도]...]}  (그 주소의 모든 업소 좌표 평균. 공유 글자 주소 찾기용)
-분류: 0 음식점, 1 카페와 디저트, 2 술집, 3 편의점"""
+분류: 0 음식점, 1 카페와 디저트, 2 술집, 3 편의점, 4 놀거리(코스용)"""
 import os, json, glob, re, unicodedata, numpy as np, pandas as pd
 U = os.environ.get('VIEWAPP', '/mnt/user-data/uploads/viewapp')
 OUT = os.environ.get('APPDATA', os.path.join(os.path.dirname(__file__), '..', 'public', 'data'))
@@ -17,14 +17,18 @@ man = json.load(open(f'{OUT}/manifest.json'))
 M = 0.004                                                       # 지역 경계 밖 여유(약 400m)
 DESSERT = {'I21001', 'I21002', 'I21008'}                          # 빵/도넛, 떡/한과, 아이스크림/빙수
 BAR = {'생맥주 전문', '요리 주점'}                                  # 유흥 주점은 뺀다
+# 놀거리: 소분류 이름으로 고른다(데이트 코스에 넣을 만한 실내외 여가). 결과의 소분류 목록을 출력하니 보고 빼거나 더한다.
+PLAY = ('노래', 'PC방', '당구', '볼링', '방탈출', '보드게임', '게임', '오락', '영화', '공연', '미술관', '박물관', '전시', '공방', '만화', '스크린 골프', '탁구', '클라이밍', '사격', '양궁', '실내 낚시', '롤러', '아이스', '수영장', '찜질', '사진 촬영')
+NOT_PLAY = ('학원', '교습', '도매', '제조', '수리', '임대')
 def cat(r):
     c2, c3, s = r.상권업종중분류코드, r.상권업종소분류코드, r.상권업종소분류명
     if c3 == 'G20405': return 3
+    if isinstance(s, str) and any(k in s for k in PLAY) and not any(k in s for k in NOT_PLAY) and not str(c2).startswith('I2'): return 4
     if c2 == 'I212' or c3 in DESSERT: return 1
     if c2 == 'I211': return 2 if s in BAR else -1
     if isinstance(c2, str) and c2.startswith('I2') and c2 != 'I207': return 0
     return -1
-CATS = ['음식점', '카페와 디저트', '술집', '편의점']
+CATS = ['음식점', '카페와 디저트', '술집', '편의점', '놀거리']
 def key(a):                                                     # '서울특별시 동작구 노량진로 100' -> '노량진로 100'
     m = re.search(r'([가-힣A-Za-z0-9.]+(?:로|길))\s*(\d+(?:-\d+)?)', str(a)); return f'{m.group(1)} {m.group(2)}' if m else None
 for reg in man['regions']:
@@ -50,4 +54,5 @@ for reg in man['regions']:
     reg['poi'] = f"{reg['id']}/poi.json"; reg['addr'] = f"{reg['id']}/addr.json"
     print(reg['id'], len(rows), 'places', pd.Series([r[1] for r in rows]).value_counts().sort_index().to_dict(), len(addrs), 'addrs',
           os.path.getsize(f"{OUT}/{reg['id']}/poi.json") // 1024, 'KB')
+    print('놀거리 소분류:', S[S.c == 4].상권업종소분류명.value_counts().to_dict())
 json.dump(man, open(f'{OUT}/manifest.json', 'w'), ensure_ascii=False, indent=1)
