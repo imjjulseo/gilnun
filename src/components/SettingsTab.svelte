@@ -27,6 +27,15 @@
   </section>
 
   <section class="card">
+    <h2 id="s-fit">지금 맞춤</h2>
+    <div class="seg" role="group" aria-labelledby="s-fit">
+      <button type="button" aria-pressed={saved.settings.fit} onclick={() => set('fit', true)}>켜기</button>
+      <button type="button" aria-pressed={!saved.settings.fit} onclick={() => set('fit', false)}>끄기</button>
+    </div>
+    <p>{saved.settings.fit ? '날씨와 해를 보고 트인 길의 기준을 조금씩 바꿔요.' : '시각과 날씨와 상관없이 같은 기준으로 트인 길을 골라요.'}</p>
+  </section>
+
+  <section class="card">
     <h2 id="s-walk">걷는 속도</h2>
     <div class="seg" role="group" aria-labelledby="s-walk">
       {#each WALKS as w}<button type="button" aria-pressed={saved.settings.walk === w.v} onclick={() => set('walk', w.v)}>{w.label}</button>{/each}
@@ -55,6 +64,7 @@
       <li>소상공인시장진흥공단 상가정보</li>
       <li>OpenFreeMap과 OpenStreetMap 바탕 지도</li>
       <li>Copernicus GLO-30 지형</li>
+      <li>Open-Meteo 날씨</li>
     </ul>
     <p>트이길은 공공데이터로 길마다 하늘, 물, 녹지가 얼마나 보이는지 계산해요. 현장과 다를 수 있어요.</p>
   </section>

@@ -7,6 +7,7 @@
   Uint8[4E]  간선 뷰 값 k(하늘), w(물), g(녹지) 0~100, c(조용함 배수×100, 최대 115)
   Uint32[E+1] 간선 모양 좌표 시작 위치(좌표 단위)
   Int32[2C]  간선 모양 좌표 경도, 위도 (×1e6). 첫 좌표가 from 노드 쪽.
+  Uint8[E]   간선 표시(11-21 추가, 없으면 앱은 0으로 본다): 1 건물내, 2 터널(지하), 4 육교, 8 횡단보도, 16 공원·녹지, 32 교량
 간선은 양방향이다. 지하철 통로는 뺀다. 뷰 계산이 없는 링크는 k=w=g=0, c=100."""
 import os, json, struct, numpy as np, pandas as pd, geopandas as gpd, shapely
 from pyproj import Transformer
@@ -29,7 +30,7 @@ for reg in man['regions']:
         k = key(x, y)
         if k not in nid: nid[k] = len(nxy); nxy.append((x, y))
         return nid[k]
-    ea, eb, el, ev, starts, coords = [], [], [], [], [0], []
+    ea, eb, el, ev, fl, starts, coords = [], [], [], [], [], [0], []
     for r in G.itertuples():
         cs = np.asarray(r.geometry.coords)[:, :2]
         if len(cs) < 2 or r.geometry.length < 0.3: continue
@@ -37,6 +38,7 @@ for reg in man['regions']:
         if a == bb: continue
         v = V.loc[r.link] if r.link in V.index else None
         ea.append(a); eb.append(bb); el.append(r.geometry.length)
+        fl.append(int(r.indoor) | int(r.tunnel) << 1 | int(r.overpass) << 2 | int(r.crosswalk) << 3 | int(r.park) << 4 | int(r.bridge) << 5)
         ev.append((0, 0, 0, 100) if v is None else tuple(int(round(min(max(t, 0), 1) * 100)) for t in (v.k, v.w, v.g)) + (int(round(min(v.c, 1.15) * 100)),))
         lon, lat = to_ll.transform(cs[:, 0], cs[:, 1]); coords += [(int(round(p * 1e6)), int(round(q * 1e6))) for p, q in zip(lon, lat)]
         starts.append(len(coords))
@@ -58,7 +60,8 @@ for reg in man['regions']:
     buf += np.asarray(ev, 'u1')[keepE].tobytes()
     buf += np.asarray(st2, '<u4').tobytes()
     buf += np.asarray(C2, '<i4').tobytes()
+    buf += np.asarray(fl, 'u1')[keepE].tobytes()
     open(f"{OUT}/{reg['id']}/graph.bin", 'wb').write(buf)
     reg['graph'] = f"{reg['id']}/graph.bin"
-    print(reg['id'], 'nodes', Nn, 'edges', E, 'coords', len(C2), 'components', nc, 'dropped edges', len(ea) - E, len(buf) // 1024, 'KB')
+    print(reg['id'], 'nodes', Nn, 'edges', E, 'coords', len(C2), 'components', nc, 'dropped edges', len(ea) - E, '건물내', int((np.asarray(fl)[keepE] & 1 > 0).sum()), '지하', int((np.asarray(fl)[keepE] & 2 > 0).sum()), len(buf) // 1024, 'KB')
 json.dump(man, open(f'{OUT}/manifest.json', 'w'), ensure_ascii=False, indent=1)

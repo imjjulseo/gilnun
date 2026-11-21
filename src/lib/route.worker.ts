@@ -37,6 +37,7 @@ self.onmessage = async (ev: MessageEvent) => {
     else if (type === 'detours') out = detours(G, data.stops, data.spots)
     else if (type === 'course') out = planCourses(G, data)
     else if (type === 'boost') { G.boost = data ? boostFrom(data.mids, data.vals) : null; out = true }
+    else if (type === 'rain') { G.rain = !!data; out = Array.from(G.flags).filter((f) => f & 3).length }
     self.postMessage({ id, ok: true, data: out, ms: performance.now() - t0 })
   } catch (e) {
     self.postMessage({ id, ok: false, error: String(e) })

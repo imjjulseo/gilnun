@@ -14,9 +14,9 @@ const uid = () => Math.random().toString(36).slice(2, 9)
 
 export type ThemePick = 'system' | 'light' | 'night'
 export type SkyPick = 'real' | 'day'
-export interface Settings { theme: ThemePick; walk: number; sky: SkyPick; open: number }
+export interface Settings { theme: ThemePick; walk: number; sky: SkyPick; open: number; fit: boolean }
 export const WALKS = [{ v: 58, label: '천천히' }, { v: 67, label: '보통' }, { v: 80, label: '빠르게' }]
-export const DEFAULT_SETTINGS: Settings = { theme: 'system', walk: 67, sky: 'real', open: 30 }
+export const DEFAULT_SETTINGS: Settings = { theme: 'system', walk: 67, sky: 'real', open: 30, fit: true }
 
 export interface Folder { id: string; name: string; items: Place[] }
 export type CourseStyle = 'fast' | 'fit' | 'view'

@@ -4,7 +4,8 @@
   import type { GeoJSONSource, Map as MlMap, ExpressionSpecification } from 'maplibre-gl'
   import { basemap, withSky, FONT, type ThemeName, type Kind } from './lib/theme'
   import { DEFAULT_PREFS, FLOOR, rate, type LinkProps, type Prefs } from './lib/score'
-  import { skyAt, sunTimes, sunsetAz, sunsetWindow, hhmm } from './lib/sun'
+  import { skyAt, sunTimes, sunsetAz, sunsetWindow, sunPos, hhmm } from './lib/sun'
+  import { getWeather, pickFit, FIT_REASON, type Fit, type Weather } from './lib/weather'
   import { Places, CAT_LABEL, meters, floorText, type Place, type PoiData, type AddrData } from './lib/places'
   import { MODES, openness, type ModeId, type RouteResult } from './lib/route'
   import { saved, store, samePlace, WALKS } from './lib/saved.svelte'
@@ -69,7 +70,8 @@
   let dragTo = $state(-1)
   let shareArt = $state<{ art: ShareArt; url: string } | null>(null)
   let horizon: { bins: number; data: Uint8Array } | null = null
-  let sunsetOn = $state(false)
+  let fit = $state<Fit>('none')
+  let weather = $state.raw<Weather | null>(null)
   let spotEta = $state<{ id: string; min: number } | null>(null)
 
   let mapEl: HTMLDivElement
@@ -329,20 +331,31 @@
       horizon = { bins: h[2], data: new Uint8Array(buf, 16) }
     } catch { /* 없으면 트인 자리만으로 노을을 판정 */ }
   }
-  /** 오늘 해 지는 방위에서 지평선이 낮은 정도(0~1). 5도 아래면 해가 지는 모습이 보인다. */
-  function sunsetScores(): number[] | null {
-    if (!horizon || !raw) return null
-    const az = sunsetAz(), step = 360 / horizon.bins, f = az / step, i0 = Math.floor(f) % horizon.bins, i1 = (i0 + 1) % horizon.bins, t = f - Math.floor(f)
-    return raw.features.map((_, k) => {
-      const a = horizon!.data[k * horizon!.bins + i0] / 4 - 10, b = horizon!.data[k * horizon!.bins + i1] / 4 - 10, hz = a + (b - a) * t
-      return Math.max(0, Math.min(1, (5 - hz) / 5))
-    })
+  /** 방위 az에서 길 조각 k의 지평선 고도(도) */
+  function hzAt(k: number, az: number): number {
+    const B = horizon!.bins, f = (((az % 360) + 360) % 360) / (360 / B), i0 = Math.floor(f) % B, i1 = (i0 + 1) % B, t = f - Math.floor(f)
+    const a = horizon!.data[k * B + i0] / 4 - 10, b = horizon!.data[k * B + i1] / 4 - 10
+    return a + (b - a) * t
   }
-  async function updateSunset() {
-    const on = !!horizon && sunsetWindow() && saved.settings.sky === 'real'
-    if (on === sunsetOn || !region?.graph) return
-    sunsetOn = on
-    await call('boost', on ? { mids, vals: sunsetScores() } : null)
+  /** 노을: 오늘 해 지는 방위에서 지평선이 5도 아래면 해 지는 모습이 보인다(0~1) */
+  const sunsetScores = () => { const az = sunsetAz(); return raw!.features.map((_, k) => Math.max(0, Math.min(1, (5 - hzAt(k, az)) / 5))) }
+  /** 그늘: 지금 해 방향의 지평선(건물, 지형)이 해보다 높으면 볕이 가려진다(0~1). 수목은 아직 약해 건물 그늘 위주 */
+  const shadeScores = (sun: { alt: number; az: number }) => raw!.features.map((_, k) => Math.max(0, Math.min(1, (hzAt(k, sun.az) - sun.alt + 2) / 4)))
+
+  // ---- 지금 맞춤: 날씨와 해를 보고 트인 길이 더 보는 것을 바꾼다
+  let fitSent = ''
+  async function updateFit() {
+    if (!region?.graph) return
+    const on = saved.settings.fit
+    weather = on ? await getWeather(region.center[0], region.center[1]) : null
+    const sun = sunPos()
+    let f: Fit = on ? pickFit(weather, sun, sunsetWindow()) : 'none'
+    if ((f === 'sunset' || f === 'shade') && !horizon) f = 'none'   // horizon.bin이 있어야 길 단위로 판정
+    const key = f + (f === 'shade' ? Math.floor(Date.now() / 600e3) : '')   // 그늘은 해가 움직이니 10분마다 다시
+    if (key === fitSent) return
+    fitSent = key; fit = f
+    await call('boost', f === 'sunset' ? { mids, vals: sunsetScores() } : f === 'shade' ? { mids, vals: shadeScores(sun) } : null)
+    await call('rain', f === 'rain')
     if (tripReady) makeRoute(false)
   }
 
@@ -571,7 +584,7 @@
   })
   const reason = $derived.by(() => {
     if (!current || current.mode === 'fast') return ''
-    if (sunsetOn && current.boost > 0.08) return '해 질 무렵이라 해 지는 쪽이 트인 길로 골랐어요.'
+    if (fit !== 'none' && current.boost > 0.05) return FIT_REASON[fit]
     return ''
   })
   const openLabel = $derived(saved.settings.open < 20 ? '조금' : saved.settings.open < 45 ? '보통' : saved.settings.open < 75 ? '많이' : '산책처럼')
@@ -596,6 +609,7 @@
     ro.observe(sheetEl); return () => ro.disconnect()
   })
   $effect(() => { saved.folders; if (ready) untrack(refreshSaved) })
+  $effect(() => { saved.settings.fit; if (ready) untrack(() => { fitSent = ''; updateFit() }) })
   $effect(() => { if (tab === 'map' && map) untrack(() => map!.resize()) })
 
   function bindLongPress() {
@@ -615,7 +629,7 @@
     let dead = false
     const mq = window.matchMedia?.('(prefers-color-scheme: dark)'), onMq = () => (sysNight = systemNight())
     mq?.addEventListener?.('change', onMq)
-    const timer = window.setInterval(() => { skyNow = skyAt(); clock = Date.now(); updateSunset() }, 60_000)
+    const timer = window.setInterval(() => { skyNow = skyAt(); clock = Date.now(); updateFit() }, 60_000)
     starTimer = window.setInterval(() => { if (sky.night > 0.02) twinkle() }, 120)
     ;(async () => {
       try {
@@ -629,7 +643,7 @@
         map.touchZoomRotate.disableRotation()
         if (import.meta.env.DEV || location.hostname === 'localhost') (window as any).__tg = { map: () => map, sky: (v: { dusk: number; night: number }) => (skyNow = v) }
         map.on('load', () => {
-          addOverlay(); addPins(); loadPlaces(); loadHorizon().then(updateSunset)
+          addOverlay(); addPins(); loadPlaces(); loadHorizon().then(updateFit)
           const sh = readTripUrl()
           if (sh) { history.replaceState(null, '', location.pathname); openTrip(sh.stops, sh.mode, sh.open, sh.name); say('공유받은 길을 열었어요.') }
         })

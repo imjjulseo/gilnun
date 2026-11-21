@@ -41,7 +41,9 @@ export class Graph {
     this.el = new Float32Array(buf, o, E); o += 4 * E
     this.ev = new Uint8Array(buf, o, 4 * E); o += 4 * E
     this.cs = new Uint32Array(buf, o, E + 1); o += 4 * (E + 1)
-    this.co = new Int32Array(buf, o, 2 * C)
+    this.co = new Int32Array(buf, o, 2 * C); o += 8 * C
+    // 간선 표시(1 건물내, 2 지하). 예전 graph.bin에는 없다.
+    this.flags = buf.byteLength >= o + E ? new Uint8Array(buf, o, E) : new Uint8Array(E)
     this.lon = new Float64Array(N); this.lat = new Float64Array(N)
     for (let i = 0; i < N; i++) { this.lon[i] = nodes[2 * i] / 1e6; this.lat[i] = nodes[2 * i + 1] / 1e6 }
     this.lon0 = this.lon.reduce((a, b) => a + b, 0) / N; this.lat0 = this.lat.reduce((a, b) => a + b, 0) / N
@@ -81,17 +83,23 @@ export class Graph {
   /** 지금 상황(노을 등)에 따라 더해 주는 간선별 값(0~1). 없으면 null. */
   boost: Float32Array | null = null
   boosted = new Uint8Array(0)
+  flags = new Uint8Array(0)
+  baseView = new Float32Array(0); baseKind = new Uint8Array(0)
+  /** 비 오는 날: 건물 안과 지하 구간을 트인 길처럼 우대한다 */
+  rain = false
   setPrefs(prefs: Prefs) {
     this.viewOf = new Float32Array(this.E); this.kindOf = new Uint8Array(this.E)
     for (let e = 0; e < this.E; e++) {
       const r = rate({ k: this.ev[4 * e], w: this.ev[4 * e + 1], g: this.ev[4 * e + 2], c: this.ev[4 * e + 3], ps: 0, pw: 0, pg: 0, pa: 0, z: 0, r: 0 }, prefs)
       this.viewOf[e] = r.v / 100; this.kindOf[e] = r.kind === 'k' ? 1 : r.kind === 'w' ? 2 : r.kind === 'g' ? 3 : 0
     }
+    this.baseView = this.viewOf.slice(); this.baseKind = this.kindOf.slice()   // 트인 구간 비율은 상황 가산 없이 센다
     this.boosted = new Uint8Array(this.E)
     if (this.boost && prefs.k) for (let e = 0; e < this.E; e++) {
       const b = this.boost[e] * 0.6
-      if (b > this.viewOf[e]) { this.viewOf[e] = b; this.kindOf[e] = 1; this.boosted[e] = 1 }
+      if (b > this.viewOf[e]) { this.viewOf[e] = b; this.boosted[e] = 1 }
     }
+    if (this.rain) for (let e = 0; e < this.E; e++) if (this.flags[e] & 3) { this.viewOf[e] = Math.max(this.viewOf[e], 0.75); this.boosted[e] = 1 }
   }
   setLambda(l: number) {
     if (this.cost.length !== this.E) this.cost = new Float64Array(this.E)
@@ -150,7 +158,7 @@ export class Graph {
       const fwd = this.ea[e] === at, pts: [number, number][] = []
       for (let i = this.cs[e]; i < this.cs[e + 1]; i++) pts.push([this.co[2 * i] / 1e6, this.co[2 * i + 1] / 1e6])
       if (!fwd) pts.reverse()
-      const kind = (['n', 'k', 'w', 'g'] as const)[this.kindOf[e]], v = Math.round(this.viewOf[e] * 100)
+      const kind = (['n', 'k', 'w', 'g'] as const)[this.kindOf[e]], v = Math.round(this.baseView[e] * 100)
       const last = out[out.length - 1]
       if (last && last.kind === kind && Math.abs(last.v - v) < 6) last.coords.push(...pts.slice(1))
       else out.push({ coords: pts, kind, v })
@@ -210,7 +218,7 @@ export function routeAll(G: Graph, stops: [number, number][], prefs: Prefs, view
       const segs = G.segs(x.path, snapped[i][0])
       const walkIn: Seg = { coords: [stops[i], [G.lon[snapped[i][0]], G.lat[snapped[i][0]]]], kind: 'n', v: 0, walk: true }
       const walkOut: Seg = { coords: [[G.lon[snapped[i + 1][0]], G.lat[snapped[i + 1][0]]], stops[i + 1]], kind: 'n', v: 0, walk: true }
-      for (const e of x.path) { const k = G.kindOf[e]; if (G.viewOf[e] >= 0.35) { if (k === 1) share.k += G.el[e]; else if (k === 2) share.w += G.el[e]; else if (k === 3) share.g += G.el[e] } }
+      for (const e of x.path) { const k = G.baseKind[e]; if (G.baseView[e] >= 0.35) { if (k === 1) share.k += G.el[e]; else if (k === 2) share.w += G.el[e]; else if (k === 3) share.g += G.el[e] } }
       const len = x.len + snapped[i][1] + snapped[i + 1][1]; total += len
       return { len, segs: [walkIn, ...segs, walkOut] }
     })
